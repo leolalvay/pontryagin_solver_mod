@@ -81,9 +81,9 @@ def assemble_residual(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
     np.ndarray
         Residual vector of length 2*N*n + n.
     """
-    N_plus_1 = t_nodes.size
-    N = N_plus_1 - 1
-    n = X.shape[1]
+    N_plus_1 = t_nodes.size # number of time nodes = N+1
+    N = N_plus_1 - 1 #number of steps
+    n = X.shape[1] #dimension of the state
     residual = np.zeros((2 * N * n + n,))
     offset = 0
     for i in range(N):
@@ -92,16 +92,14 @@ def assemble_residual(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
         x_ip1 = X[i + 1]
         p_i = P[i]
         p_ip1 = P[i + 1]
-        # gradient at start
-        _, grad_p_i, _ = eval_H_smooth(problem, bundle, p_i, x_i, t_nodes[i], delta)
-        # gradient at end (for costate update)
-        _, _, grad_x_ip1 = eval_H_smooth(problem, bundle, p_ip1, x_ip1, t_nodes[i + 1], delta)
+        # # gradients evaluated at (p_{i+1}, x_i, t_i)
+        _, grad_p, grad_x = eval_H_smooth(problem, bundle, p_ip1, x_i, t_nodes[i], delta)
         # state residual r_x = x_i + dt * grad_p - x_{i+1}
-        r_x = x_i + dt * grad_p_i - x_ip1
+        r_x = x_ip1 - x_i - dt * grad_p  
         residual[offset:offset + n] = r_x
         offset += n
         # costate residual r_p = p_{i+1} + dt * grad_x_ip1 - p_i
-        r_p = p_ip1 + dt * grad_x_ip1 - p_i
+        r_p = p_i - p_ip1 - dt * grad_x
         residual[offset:offset + n] = r_p
         offset += n
     # terminal boundary condition: p_N + ∇g(x_N) = 0
@@ -124,18 +122,209 @@ def assemble_residual(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
 
 def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray, bundle, delta: float) -> np.ndarray:
     """
-    Assemble the Jacobian matrix of the residual with respect to the unknowns.
+    Assemble the Jacobian matrix dF/dz exploiting locality (block stencil) for
+    the symplectic Euler residual used in assemble_residual.
 
-    The unknown vector consists of x_1,...,x_N, p_0,...,p_N.  The Jacobian
-    therefore has shape ((2*N*n + n), (2*N*n + n)).  We compute it by
-    finite differences on the residual function.  This is expensive for large
-    problems but suffices for moderate N and n.
+    Unknown vector order (repo):
+        z = (x_1,...,x_N, p_0,...,p_N)  in R^{(2N+1)n}
 
-    Returns
-    -------
-    np.ndarray
-        Full Jacobian matrix.
+    Residual order:
+        F = (r_x^0, r_p^0, r_x^1, r_p^1, ..., r_x^{N-1}, r_p^{N-1}, r_bc)
+
+    This routine builds the SAME Jacobian as global finite differences, but
+    computes only the needed blocks using local finite differences:
+        r_x^i depends on (x_i, x_{i+1}, p_{i+1})
+        r_p^i depends on (x_i, p_i, p_{i+1})
+        r_bc depends on (x_N, p_N)
     """
+    N_plus_1 = t_nodes.size
+    N = N_plus_1 - 1
+    n = X.shape[1]
+
+    m = (2 * N + 1) * n  # number of unknowns = number of equations
+    J = np.zeros((m, m))
+    I = np.eye(n)
+
+    eps = 1e-7  # FD step for local Jacobian blocks
+
+    # -------------------------
+    # Index maps (repo order)
+    # -------------------------
+    def col_x(k: int) -> int:
+        """Start column (0-based) of block x_k in z. Only valid for k=1..N."""
+        return (k - 1) * n
+
+    def col_p(j: int) -> int:
+        """Start column (0-based) of block p_j in z. Valid for j=0..N."""
+        return N * n + j * n
+
+    def row_rx(i: int) -> int:
+        """Start row of block r_x^i in F."""
+        return (2 * i) * n
+
+    def row_rp(i: int) -> int:
+        """Start row of block r_p^i in F."""
+        return (2 * i + 1) * n
+
+    row_bc = (2 * N) * n
+
+    # -------------------------
+    # Local nonlinear parts
+    # -------------------------
+    def phi(i: int) -> np.ndarray:
+        """
+        Nonlinear part of r_x^i:
+            r_x^i = (x_{i+1} - x_i) + phi
+            phi = -dt * grad_p H_delta(p_{i+1}, x_i, t_i)
+        """
+        dt = t_nodes[i + 1] - t_nodes[i]
+        _, grad_p, _ = eval_H_smooth(problem, bundle, P[i + 1], X[i], t_nodes[i], delta)
+        return -dt * grad_p
+
+    def psi(i: int) -> np.ndarray:
+        """
+        Nonlinear part of r_p^i:
+            r_p^i = (p_i - p_{i+1}) + psi
+            psi = -dt * grad_x H_delta(p_{i+1}, x_i, t_i)
+        """
+        dt = t_nodes[i + 1] - t_nodes[i]
+        _, _, grad_x = eval_H_smooth(problem, bundle, P[i + 1], X[i], t_nodes[i], delta)
+        return -dt * grad_x
+
+    def bc_block() -> np.ndarray:
+        """
+        Boundary residual block:
+            r_bc = p_N + grad g(x_N)
+        grad g computed by central differences (same style as assemble_residual).
+        """
+        xN = X[-1]
+        pN = P[-1]
+        g_grad = np.zeros_like(pN)
+        epsg = 1e-6
+        for j in range(n):
+            x_plus = xN.copy()
+            x_minus = xN.copy()
+            x_plus[j] += epsg
+            x_minus[j] -= epsg
+            g_plus = problem.g(x_plus)
+            g_minus = problem.g(x_minus)
+            g_grad[j] = (g_plus - g_minus) / (2 * epsg)
+        return pN + g_grad
+
+    # ============================================================
+    # Fill Jacobian blocks
+    # ============================================================
+    for i in range(N):
+        rr_x = row_rx(i)
+        rr_p = row_rp(i)
+
+        # ---------- r_x^i linear blocks ----------
+        # d r_x^i / d x_{i+1} = I
+        cx_ip1 = col_x(i + 1)
+        J[rr_x:rr_x + n, cx_ip1:cx_ip1 + n] = I
+
+        # d r_x^i / d x_i has linear part -I (only if x_i is an unknown => i>=1)
+        if i >= 1:
+            cx_i = col_x(i)
+            J[rr_x:rr_x + n, cx_i:cx_i + n] = -I
+
+        # ---------- r_p^i linear blocks ----------
+        # d r_p^i / d p_i = I
+        cp_i = col_p(i)
+        J[rr_p:rr_p + n, cp_i:cp_i + n] = I
+
+        # d r_p^i / d p_{i+1} has linear part -I
+        cp_ip1 = col_p(i + 1)
+        J[rr_p:rr_p + n, cp_ip1:cp_ip1 + n] = -I
+
+        # ---------- local FD: add nonlinear contributions ----------
+        # r_x^i nonlinear depends on x_i (if i>=1) and p_{i+1}
+        # r_p^i nonlinear depends on x_i (if i>=1) and p_{i+1}
+
+        # dphi/dx_i and dpsi/dx_i (only if x_i unknown)
+        if i >= 1:
+            cx_i = col_x(i)
+            for ell in range(n):
+                old = X[i, ell]
+
+                X[i, ell] = old + eps
+                phi_p = phi(i)
+                psi_p = psi(i)
+
+                X[i, ell] = old - eps
+                phi_m = phi(i)
+                psi_m = psi(i)
+
+                X[i, ell] = old
+
+                dphi = (phi_p - phi_m) / (2 * eps)  # column ell of dphi/dx_i
+                dpsi = (psi_p - psi_m) / (2 * eps)  # column ell of dpsi/dx_i
+
+                # r_x^i rows: add dphi/dx_i
+                J[rr_x:rr_x + n, cx_i + ell] += dphi
+                # r_p^i rows: add dpsi/dx_i
+                J[rr_p:rr_p + n, cx_i + ell] += dpsi
+
+        # dphi/dp_{i+1} and dpsi/dp_{i+1} (p_{i+1} always unknown)
+        for ell in range(n):
+            old = P[i + 1, ell]
+
+            P[i + 1, ell] = old + eps
+            phi_p = phi(i)
+            psi_p = psi(i)
+
+            P[i + 1, ell] = old - eps
+            phi_m = phi(i)
+            psi_m = psi(i)
+
+            P[i + 1, ell] = old
+
+            dphi = (phi_p - phi_m) / (2 * eps)  # column ell of dphi/dp_{i+1}
+            dpsi = (psi_p - psi_m) / (2 * eps)  # column ell of dpsi/dp_{i+1}
+
+            # r_x^i rows: add dphi/dp_{i+1}
+            J[rr_x:rr_x + n, cp_ip1 + ell] += dphi
+            # r_p^i rows: add dpsi/dp_{i+1} (this is the nonlinear "extra" beyond -I)
+            J[rr_p:rr_p + n, cp_ip1 + ell] += dpsi
+
+    # ---------- boundary condition blocks ----------
+    # d r_bc / d p_N = I
+    cp_N = col_p(N)
+    J[row_bc:row_bc + n, cp_N:cp_N + n] = I
+
+    # d r_bc / d x_N by FD (x_N is x_k with k=N => in z it's x_N block)
+    cx_N = col_x(N)
+    for ell in range(n):
+        old = X[N, ell]
+
+        X[N, ell] = old + eps
+        fp = bc_block()
+
+        X[N, ell] = old - eps
+        fm = bc_block()
+
+        X[N, ell] = old
+
+        J[row_bc:row_bc + n, cx_N + ell] = (fp - fm) / (2 * eps)
+
+    return J
+
+
+
+""" def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray, bundle, delta: float) -> np.ndarray:
+
+    #Assemble the Jacobian matrix of the residual with respect to the unknowns.
+
+    #The unknown vector consists of x_1,...,x_N, p_0,...,p_N.  The Jacobian
+    #therefore has shape ((2*N*n + n), (2*N*n + n)).  We compute it by
+    #finite differences on the residual function.  This is expensive for large
+    #problems but suffices for moderate N and n.
+
+    #Returns
+    -------
+    #np.ndarray
+        #Full Jacobian matrix.
+    
     # pack current unknown vector
     z = pack_unknowns(X, P)
     # function to compute residual
@@ -156,4 +345,4 @@ def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
         F_plus = res_fun(z_plus)
         F_minus = res_fun(z_minus)
         J[:, j] = (F_plus - F_minus) / (2 * eps)
-    return J
+    return J """
