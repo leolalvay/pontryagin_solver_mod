@@ -1,6 +1,6 @@
 import numpy as np
 from typing import Tuple
-
+from scipy.sparse import coo_matrix
 from .smoothing import eval_H_smooth
 from .hamiltonian import compute_H
 
@@ -120,7 +120,7 @@ def assemble_residual(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
     residual[offset:] = r_bc
     return residual
 
-def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray, bundle, delta: float) -> np.ndarray:
+def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray, bundle, delta: float):
     """
     Assemble the Jacobian matrix dF/dz exploiting locality (block stencil) for
     the symplectic Euler residual used in assemble_residual.
@@ -131,20 +131,20 @@ def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
     Residual order:
         F = (r_x^0, r_p^0, r_x^1, r_p^1, ..., r_x^{N-1}, r_p^{N-1}, r_bc)
 
-    This routine builds the SAME Jacobian as global finite differences, but
-    computes only the needed blocks using local finite differences:
+    This routine builds the SAME Jacobian as the dense implementation, but
+    returns a sparse matrix (CSR). The sparsity pattern follows the local
+    dependencies:
         r_x^i depends on (x_i, x_{i+1}, p_{i+1})
         r_p^i depends on (x_i, p_i, p_{i+1})
         r_bc depends on (x_N, p_N)
     """
+    
+
     N_plus_1 = t_nodes.size
     N = N_plus_1 - 1
     n = X.shape[1]
 
     m = (2 * N + 1) * n  # number of unknowns = number of equations
-    J = np.zeros((m, m))
-    I = np.eye(n)
-
     eps = 1e-7  # FD step for local Jacobian blocks
 
     # -------------------------
@@ -212,8 +212,20 @@ def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
         return pN + g_grad
 
     # ============================================================
-    # Fill Jacobian blocks
+    # Build sparse matrix via triplets (COO), then convert to CSR.
+    # This avoids fragile sparse slicing/+= behavior.
     # ============================================================
+    rows = []
+    cols = []
+    data = []
+
+    def add_I(rr0: int, cc0: int, sign: float):
+        """Add sign*I_n block at (rr0, cc0)."""
+        for r in range(n):
+            rows.append(rr0 + r)
+            cols.append(cc0 + r)
+            data.append(sign)
+
     for i in range(N):
         rr_x = row_rx(i)
         rr_p = row_rp(i)
@@ -221,26 +233,23 @@ def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
         # ---------- r_x^i linear blocks ----------
         # d r_x^i / d x_{i+1} = I
         cx_ip1 = col_x(i + 1)
-        J[rr_x:rr_x + n, cx_ip1:cx_ip1 + n] = I
+        add_I(rr_x, cx_ip1, +1.0)
 
         # d r_x^i / d x_i has linear part -I (only if x_i is an unknown => i>=1)
         if i >= 1:
             cx_i = col_x(i)
-            J[rr_x:rr_x + n, cx_i:cx_i + n] = -I
+            add_I(rr_x, cx_i, -1.0)
 
         # ---------- r_p^i linear blocks ----------
         # d r_p^i / d p_i = I
         cp_i = col_p(i)
-        J[rr_p:rr_p + n, cp_i:cp_i + n] = I
+        add_I(rr_p, cp_i, +1.0)
 
         # d r_p^i / d p_{i+1} has linear part -I
         cp_ip1 = col_p(i + 1)
-        J[rr_p:rr_p + n, cp_ip1:cp_ip1 + n] = -I
+        add_I(rr_p, cp_ip1, -1.0)
 
         # ---------- local FD: add nonlinear contributions ----------
-        # r_x^i nonlinear depends on x_i (if i>=1) and p_{i+1}
-        # r_p^i nonlinear depends on x_i (if i>=1) and p_{i+1}
-
         # dphi/dx_i and dpsi/dx_i (only if x_i unknown)
         if i >= 1:
             cx_i = col_x(i)
@@ -260,10 +269,10 @@ def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
                 dphi = (phi_p - phi_m) / (2 * eps)  # column ell of dphi/dx_i
                 dpsi = (psi_p - psi_m) / (2 * eps)  # column ell of dpsi/dx_i
 
-                # r_x^i rows: add dphi/dx_i
-                J[rr_x:rr_x + n, cx_i + ell] += dphi
-                # r_p^i rows: add dpsi/dx_i
-                J[rr_p:rr_p + n, cx_i + ell] += dpsi
+                c = cx_i + ell
+                for r in range(n):
+                    rows.append(rr_x + r); cols.append(c); data.append(float(dphi[r]))
+                    rows.append(rr_p + r); cols.append(c); data.append(float(dpsi[r]))
 
         # dphi/dp_{i+1} and dpsi/dp_{i+1} (p_{i+1} always unknown)
         for ell in range(n):
@@ -282,17 +291,17 @@ def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
             dphi = (phi_p - phi_m) / (2 * eps)  # column ell of dphi/dp_{i+1}
             dpsi = (psi_p - psi_m) / (2 * eps)  # column ell of dpsi/dp_{i+1}
 
-            # r_x^i rows: add dphi/dp_{i+1}
-            J[rr_x:rr_x + n, cp_ip1 + ell] += dphi
-            # r_p^i rows: add dpsi/dp_{i+1} (this is the nonlinear "extra" beyond -I)
-            J[rr_p:rr_p + n, cp_ip1 + ell] += dpsi
+            c = cp_ip1 + ell
+            for r in range(n):
+                rows.append(rr_x + r); cols.append(c); data.append(float(dphi[r]))
+                rows.append(rr_p + r); cols.append(c); data.append(float(dpsi[r]))
 
     # ---------- boundary condition blocks ----------
     # d r_bc / d p_N = I
     cp_N = col_p(N)
-    J[row_bc:row_bc + n, cp_N:cp_N + n] = I
+    add_I(row_bc, cp_N, +1.0)
 
-    # d r_bc / d x_N by FD (x_N is x_k with k=N => in z it's x_N block)
+    # d r_bc / d x_N by FD
     cx_N = col_x(N)
     for ell in range(n):
         old = X[N, ell]
@@ -305,8 +314,15 @@ def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
 
         X[N, ell] = old
 
-        J[row_bc:row_bc + n, cx_N + ell] = (fp - fm) / (2 * eps)
+        dcol = (fp - fm) / (2 * eps)
+        c = cx_N + ell
+        for r in range(n):
+            rows.append(row_bc + r)
+            cols.append(c)
+            data.append(float(dcol[r]))
 
+    J = coo_matrix((data, (rows, cols)), shape=(m, m)).tocsr()
+    J.sum_duplicates()
     return J
 
 

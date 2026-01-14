@@ -1,7 +1,11 @@
 import numpy as np
-
+import time
 from .integrators import unpack_unknowns, pack_unknowns
 from .shooting import shooting_residual, shooting_jacobian
+from scipy.sparse import csc_matrix
+from scipy.sparse.linalg import splu
+from scipy.sparse import issparse
+
 
 def solve_tpbvp(problem, t_nodes: np.ndarray, bundle, delta: float,
                  X_init: np.ndarray = None, P_init: np.ndarray = None,
@@ -58,12 +62,22 @@ def solve_tpbvp(problem, t_nodes: np.ndarray, bundle, delta: float,
             # converged
             break
         J = shooting_jacobian(problem, t_nodes, z, bundle, delta)
-        # solve J * dz = -F
+        # solve J * dz = -F (sparse LU on a CSC view of J)
         try:
-            dz = np.linalg.solve(J, -F)
-        except np.linalg.LinAlgError:
+            lu = splu(csc_matrix(J), permc_spec="COLAMD")
+            dz = lu.solve(-F)
+        except Exception:
+            J_dense = J.toarray() if issparse(J) else J
+            dz = np.linalg.solve(J_dense, -F)
+            
+        #--------------------------------------------------
+        # solve J * dz = -F
+        #try:
+            #dz = np.linalg.solve(J, -F)
+        #except np.linalg.LinAlgError:
             # fallback to least squares if singular
-            dz, *_ = np.linalg.lstsq(J, -F, rcond=None)
+            #dz, *_ = np.linalg.lstsq(J, -F, rcond=None)
+        #------------------------------------------------------
         # line search
         lam = 1.0
         z_new = z + lam * dz

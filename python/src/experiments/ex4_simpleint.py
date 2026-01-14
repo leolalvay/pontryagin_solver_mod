@@ -7,7 +7,9 @@ subject to x'(t) = u(t),  u(t) in [-1, 1],  x(0)=x0,  g(x(T))=0.
 import time
 import numpy as np
 import matplotlib.pyplot as plt
-
+from scipy.sparse import csc_matrix
+from scipy.sparse.linalg import splu
+from scipy.sparse import issparse
 from core.problem import OCPProblem
 from core.adaptivity import solve_optimal_control
 from core.integrators import pack_unknowns
@@ -134,22 +136,41 @@ def run_example():
     t2 = time.perf_counter()
 
     rhs = -F
+    # ---- Dense solve timing ----
     t3 = time.perf_counter()
-    dz_dense = np.linalg.solve(J, rhs)
+    dz_dense = np.linalg.solve(J.toarray() if hasattr(J, "toarray") else J, rhs)
     t4 = time.perf_counter()
+
+    # ---- Sparse solve timing (same J, converted to CSC) ----
+    t5 = time.perf_counter()
+    lu = splu(csc_matrix(J), permc_spec="COLAMD")
+    t6 = time.perf_counter()
+    dz_sparse = lu.solve(rhs)
+    t7 = time.perf_counter()
 
     print("\nTiming (at converged iterate)")
     print("Residual eval time   =", (t1 - t0), "sec")
     print("Jacobian build time  =", (t2 - t1), "sec")
     print("Dense solve time     =", (t4 - t3), "sec")
+    print("Sparse LU factor     =", (t6 - t5), "sec")
+    print("Sparse solve time    =", (t7 - t6), "sec")
+    print("||dz_dense - dz_sparse||_inf =", float(np.max(np.abs(dz_dense - dz_sparse))))    
 
     # Sparsity statistics
     tol_nz = 1e-12
-    nnz = int(np.sum(np.abs(J) > tol_nz))
-    density = nnz / J.size
+
+    if issparse(J):
+        nnz = int((np.abs(J) > tol_nz).nnz)
+        total = int(J.shape[0] * J.shape[1])
+    else:
+        nnz = int(np.sum(np.abs(J) > tol_nz))
+        total = int(J.size)
+
+    density = nnz / total
+
     print("\nJacobian stats")
     print("Jacobian shape:", J.shape)
-    print("Jacobian nnz (>|{:.0e}|):".format(tol_nz), nnz, "/", J.size)
+    print("Jacobian nnz (>|{:.0e}|):".format(tol_nz), nnz, "/", total)
     print("Jacobian density:", density)
 
     # Figure: sparsity with current z-order (x-block then p-block)
@@ -186,7 +207,7 @@ def run_example():
     J_col = J[:, perm_col]
 
     # Bandwidth estimate after column interleaving
-    rows, cols = np.where(np.abs(J_col) > tol_nz)
+    rows, cols = (np.abs(J_col) > tol_nz).nonzero()
     lower_bw = int(np.max(rows - cols))
     upper_bw = int(np.max(cols - rows))
     print("\nEstimated bandwidth after COLUMN interleaving: lower =", lower_bw, ", upper =", upper_bw)

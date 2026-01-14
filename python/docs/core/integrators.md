@@ -192,381 +192,377 @@ r_bc = p_N + g_grad
 ```
 
 ---
-# 5) `assemble_jacobian` (core / `integrators.py`)
+# `assemble_jacobian` (core / `integrators.py`)
 
-This note documents the **mathematics** and the **implementation** of:
+This note documents **both the mathematics and the implementation** of:
 
 ```python
-assemble_jacobian(problem, t_nodes, X, P, bundle, delta) -> np.ndarray
+assemble_jacobian(problem, t_nodes, X, P, bundle, delta)
 ```
 
-The goal is to make future debugging and maintenance straightforward.
+It is written so that you can debug future issues by checking (i) the discretization, (ii) the index maps, and (iii) the block-wise Jacobian contributions.
 
 ---
 
-## 1) What this function computes
+## 1) Purpose
 
 `assemble_jacobian(...)` builds the Jacobian matrix
 
 $$
-J \;=\;\frac{\partial F}{\partial z},
+J = \frac{\partial F}{\partial z},
 $$
 
-where:
+where $F(z)=0$ is the TPBVP residual produced by the symplectic-Euler shooting discretization, and $z$ is the vector of unknowns (state + costate) in the **repo ordering**.
 
-- $z$ is the flattened vector of unknowns (state + costate),
-- $F(z)$ is the residual produced by `assemble_residual(...)` for a **symplectic Euler** discretization of the Hamiltonian system + terminal boundary condition.
-
-The implementation **exploits locality** of the discretization: instead of computing all columns by global finite differences on the full residual, it fills only the **necessary block entries** (a block stencil), using local finite differences only for the nonlinear pieces.
+The key implementation idea is **locality**: each residual block depends only on a few neighboring unknown blocks (a block stencil). Therefore we compute only those Jacobian blocks (linear blocks analytically + nonlinear blocks by local central differences).
 
 ---
 
-## 2) Shapes and indexing conventions (repo order)
+## 2) Definitions, shapes, and repo conventions
+
+### 2.1 Time grid and trajectories
 
 Let:
 
-- $N = \texttt{t\_nodes.size} - 1$  (number of time steps),
-- $n = \texttt{X.shape[1]}$         (dimension of state/costate).
+- $N = \texttt{t\_nodes.size} - 1$ (number of time steps),
+- $n = \texttt{X.shape[1]}$ (dimension of state/costate).
 
 Inputs:
 
-- `t_nodes`: shape $(N+1,)$, nodes $t_0<\dots<t_N$
-- `X`: shape $(N+1,n)$, state trajectory $x_0,\dots,x_N$
-- `P`: shape $(N+1,n)$, costate trajectory $p_0,\dots,p_N$
+- `t_nodes`: shape $(N+1,)$ with nodes $t_0<\dots<t_N$,
+- `X`: shape $(N+1,n)$ with states $x_0,\dots,x_N$,
+- `P`: shape $(N+1,n)$ with costates $p_0,\dots,p_N$.
 
-### Unknown vector $z$
+### 2.2 Unknown vector $z$ (repo order)
 
-`pack_unknowns(X,P)` defines the unknown ordering used throughout the repo:
+The repo packs unknowns as:
 
 $$
-z \;=\; (x_1,\dots,x_N,\; p_0,\dots,p_N)\in\mathbb{R}^{(2N+1)n}.
+z = (x_1,\dots,x_N,\; p_0,\dots,p_N)\in\mathbb{R}^{(2N+1)n}.
 $$
 
-Important:
-- $x_0$ is **fixed** (given by the problem) and is **not** included in $z$.
+Important: $x_0$ is fixed (given by the OCP) and **is not part of $z$**.
 
-So the Jacobian is square:
+Hence:
 
 $$
 m = (2N+1)n,\qquad J\in\mathbb{R}^{m\times m}.
 $$
 
-### Residual vector $F$ ordering
+### 2.3 Residual vector $F$ (row order)
 
-`assemble_residual(...)` returns:
+The residual is ordered as:
 
 $$
 F = (r_x^0, r_p^0, r_x^1, r_p^1, \dots, r_x^{N-1}, r_p^{N-1}, r_{bc}),
 $$
 
-so:
-
-- each $r_x^i\in\mathbb{R}^n$
-- each $r_p^i\in\mathbb{R}^n$
-- $r_{bc}\in\mathbb{R}^n$
-- total length: $2Nn+n=(2N+1)n$.
+with each block $r_x^i,r_p^i,r_{bc}\in\mathbb{R}^n$. Total length is $2Nn+n = (2N+1)n = m$.
 
 ---
 
-## 3) Discretization behind the residual
+## 3) Discretization being linearized
 
-For each step $i=0,\dots,N-1$, define:
+For each time step $i=0,\dots,N-1$ define:
 
-- $\Delta t_i = t_{i+1}-t_i$
-- gradients from the smoothed Hamiltonian (as returned by `eval_H_smooth`):
+$$
+\Delta t_i = t_{i+1}-t_i.
+$$
+
+The smoothed Hamiltonian is evaluated through:
 
 $$
 (\_, \nabla_p H_\delta, \nabla_x H_\delta)
-= \texttt{eval\_H\_smooth}(\texttt{problem},\texttt{bundle},p_{i+1},x_i,t_i,\delta).
+=
+\texttt{eval\_H\_smooth}(\texttt{problem},\texttt{bundle},p_{i+1},x_i,t_i,\delta).
 $$
 
-The residual blocks are:
+### 3.1 Residual blocks
 
-### State residual
-$$
-r_x^i \;=\; x_{i+1} - x_i - \Delta t_i\,\nabla_p H_\delta(p_{i+1},x_i,t_i).
-$$
-
-### Costate residual
-$$
-r_p^i \;=\; p_i - p_{i+1} - \Delta t_i\,\nabla_x H_\delta(p_{i+1},x_i,t_i).
-$$
-
-### Terminal boundary condition
-The terminal condition is
+State residual:
 
 $$
-r_{bc} \;=\; p_N + \nabla g(x_N),
+r_x^i = x_{i+1} - x_i - \Delta t_i\,\nabla_p H_\delta(p_{i+1},x_i,t_i).
 $$
 
-where `assemble_residual` computes $$\nabla g(x_N)$$ by **central finite differences**.
+Costate residual:
+
+$$
+r_p^i = p_i - p_{i+1} - \Delta t_i\,\nabla_x H_\delta(p_{i+1},x_i,t_i).
+$$
+
+Terminal boundary condition:
+
+$$
+r_{bc} = p_N + \nabla g(x_N).
+$$
+
+In the code, $\nabla g(x_N)$ is computed by central finite differences (same convention as in `assemble_residual`).
 
 ---
 
-## 4) Sparsity / locality structure (block stencil)
+## 4) Locality / sparsity pattern (block stencil)
 
 From the formulas:
 
-- $r_x^i$ depends on $x_{i+1}, x_i, p_{i+1}$
-- $r_p^i$ depends on $p_i, p_{i+1}, x_i$
-- $r_{bc}$ depends on $x_N, p_N$
+- $r_x^i$ depends on $x_{i+1}, x_i, p_{i+1}$,
+- $r_p^i$ depends on $p_i, p_{i+1}, x_i$,
+- $r_{bc}$ depends on $x_N, p_N$.
 
-So the Jacobian is **block-banded** (block size $n\times n$), with only a few nonzero blocks per residual block row.
+So each residual block row touches only a few unknown blocks. The Jacobian is therefore **block-banded** (block size $n\times n$).
 
-A convenient “stencil view”:
-
-- Row block for $r_x^i$ touches columns for $x_{i+1}$, $x_i$ (if $i\ge 1$), and $p_{i+1}$.
-- Row block for $r_p^i$ touches columns for $p_i$, $p_{i+1}$, and $x_i$ (if $i\ge 1$).
-- Row block for $r_{bc}$ touches columns for $x_N$ and $p_N$.
-
-Why the condition $i\ge 1$?
-- For $i=0$, $x_0$ is not part of $z$, so there is **no column** corresponding to $x_0$.
+Special case $i=0$: the residual depends on $x_0$, but $x_0$ is not in $z$, so there is **no Jacobian column for $x_0$**. This is why the code only adds $\partial/\partial x_i$ contributions when $i\ge 1$.
 
 ---
 
-## 5) Exact linear blocks vs. nonlinear blocks
+## 5) Decomposition into linear vs nonlinear parts
 
-Split each residual block into “linear” parts plus “nonlinear” parts.
-
-### Define nonlinear helpers (as in code)
-
-The code defines:
+The code introduces (conceptually):
 
 $$
-\phi(i) = -\Delta t_i \,\nabla_p H_\delta(p_{i+1},x_i,t_i),
+\phi(i) = -\Delta t_i\,\nabla_p H_\delta(p_{i+1},x_i,t_i),
+\qquad
+\psi(i) = -\Delta t_i\,\nabla_x H_\delta(p_{i+1},x_i,t_i),
 $$
 
-so
+so:
 
 $$
-r_x^i = (x_{i+1}-x_i) + \phi(i).
-$$
-
-And:
-
-$$
-\psi(i) = -\Delta t_i \,\nabla_x H_\delta(p_{i+1},x_i,t_i),
-$$
-
-so
-
-$$
+r_x^i = (x_{i+1}-x_i) + \phi(i),
+\qquad
 r_p^i = (p_i-p_{i+1}) + \psi(i).
 $$
 
-### Linear Jacobian blocks (filled analytically)
+### 5.1 Exact linear Jacobian blocks (inserted analytically)
 
-From the explicit linear parts:
+From the explicit linear terms:
 
-- $$\frac{\partial r_x^i}{\partial x_{i+1}} = I$$
-- $$\frac{\partial r_x^i}{\partial x_i} = -I, \quad i\ge1$$
+- $\frac{\partial r_x^i}{\partial x_{i+1}} = I_n$,
+- $\frac{\partial r_x^i}{\partial x_i} = -I_n$ (only if $i\ge 1$),
+- $\frac{\partial r_p^i}{\partial p_i} = I_n$,
+- $\frac{\partial r_p^i}{\partial p_{i+1}} = -I_n$,
+- $\frac{\partial r_{bc}}{\partial p_N} = I_n$.
 
-- $$\frac{\partial r_p^i}{\partial p_i} = I$$
-- $$\frac{\partial r_p^i}{\partial p_{i+1}} = -I$$
+These blocks do not require finite differences and are inserted directly.
 
-For the boundary condition:
+### 5.2 Nonlinear Jacobian blocks (approximated by local central differences)
 
-- $$\frac{\partial r_{bc}}{\partial p_N} = I$$
+The remaining blocks come from derivatives of $\phi(i)$ and $\psi(i)$:
 
-These blocks are inserted directly into `J[...] = I` or `-I`.
+- $\frac{\partial \phi(i)}{\partial x_i},\ \frac{\partial \psi(i)}{\partial x_i}$ ($i\ge 1$),
+- $\frac{\partial \phi(i)}{\partial p_{i+1}},\ \frac{\partial \psi(i)}{\partial p_{i+1}}$.
 
-### Nonlinear Jacobian blocks (approximated by finite differences)
+These correspond to second-derivative objects of the smoothed Hamiltonian (mixed Hessians). The implementation approximates these columns using **central differences** with:
 
-The remaining dependencies come from derivatives of $\phi(i)$ and $\psi(i)$:
+- `eps = 1e-7` (Jacobian FD step).
 
-- $\frac{\partial \phi(i)}{\partial x_i}$, $\frac{\partial \psi(i)}{\partial x_i}$  (only if $i\ge1$)
-- $\frac{\partial \phi(i)}{\partial p_{i+1}}$, $\frac{\partial \psi(i)}{\partial p_{i+1}}$
+For example, for a coordinate $\ell$:
 
-These correspond (conceptually) to second derivatives of the smoothed Hamiltonian:
+$$
+\frac{\partial \phi(i)}{\partial x_i^{(\ell)}} \approx
+\frac{\phi(i; x_i^{(\ell)}+\texttt{eps})-\phi(i; x_i^{(\ell)}-\texttt{eps})}{2\,\texttt{eps}},
+$$
 
-- $\partial_{x}\nabla_p H_\delta$, $\partial_{p}\nabla_p H_\delta$
-- $\partial_{x}\nabla_x H_\delta$, $\partial_{p}\nabla_x H_\delta$
-
-The code approximates them using **central differences** with step:
-
-- `eps = 1e-7` (local FD step for Jacobian blocks)
-
----
-
-## 6) Row/column maps used in the implementation
-
-The code builds index helpers consistent with the repo ordering:
-
-### Column starts in $z$
-
-- `col_x(k)` for $x_k$ (valid only for $k=1,\dots,N$):
-  $$
-  \texttt{col\_x}(k) = (k-1)n
-  $$
-- `col_p(j)` for $p_j$ (valid for $j=0,\dots,N$):
-  $$
-  \texttt{col\_p}(j) = Nn + jn
-  $$
-
-### Row starts in $F$
-
-- `row_rx(i)` for $r_x^i$:
-  $$
-  \texttt{row\_rx}(i) = (2i)n
-  $$
-- `row_rp(i)` for $r_p^i$:
-  $$
-  \texttt{row\_rp}(i) = (2i+1)n
-  $$
-- boundary block:
-  $$
-  \texttt{row\_bc} = (2N)n
-  $$
-
-These are used to place each $n\times n$ block into the correct slice of `J`.
+and similarly for $\psi(i)$ and perturbations of $p_{i+1}$.
 
 ---
 
-## 7) Implementation walkthrough (what the code does)
+## 6) Row/column index maps used in the code
 
-### Step A — Initialize
-- allocates:
-  - `J = np.zeros((m,m))`
-  - `I = np.eye(n)`
-- chooses FD step:
-  - `eps = 1e-7`
+The implementation uses helper maps consistent with the repo ordering.
 
-> Note: `J` is dense (`np.zeros`). The *pattern* is sparse/block-banded, but stored densely here.
+### 6.1 Column starts in $z$
 
-### Step B — Define local nonlinear functions
-- `phi(i)` calls `eval_H_smooth(...)` and returns $$-\Delta t_i\nabla_p H_\delta(...)$$
-- `psi(i)` calls `eval_H_smooth(...)` and returns $$-\Delta t_i\nabla_x H_\delta(...)$$
+- For $x_k$ (only valid for $k=1,\dots,N$):
 
-### Step C — Loop over time steps $$i=0,\dots,N-1$$ and fill blocks
-For each step:
+$$
+\texttt{col\_x}(k) = (k-1)n.
+$$
 
-1) Fill exact linear blocks:
+- For $p_j$ (valid for $j=0,\dots,N$):
 
-- in `r_x^i` rows:
-  - `d r_x^i / d x_{i+1} = I`
-  - `d r_x^i / d x_i = -I` only if `i >= 1`
+$$
+\texttt{col\_p}(j) = Nn + jn.
+$$
 
-- in `r_p^i` rows:
-  - `d r_p^i / d p_i = I`
-  - `d r_p^i / d p_{i+1} = -I`
+### 6.2 Row starts in $F$
 
-2) Add nonlinear corrections via local FD:
+- For $r_x^i$:
 
-- If `i >= 1`, for each coordinate `ell = 0..n-1`, perturb `X[i, ell]`:
+$$
+\texttt{row\_rx}(i) = (2i)n.
+$$
 
-  - set `X[i, ell] = old + eps`, compute `phi_p, psi_p`
-  - set `X[i, ell] = old - eps`, compute `phi_m, psi_m`
-  - restore `X[i, ell] = old`
+- For $r_p^i$:
 
-  Then:
+$$
+\texttt{row\_rp}(i) = (2i+1)n.
+$$
 
-  $$
-  d\phi \approx \frac{\phi_p-\phi_m}{2\,\texttt{eps}},\qquad
-  d\psi \approx \frac{\psi_p-\psi_m}{2\,\texttt{eps}}.
-  $$
+- For the terminal block:
 
-  And add these column vectors into `J`:
+$$
+\texttt{row\_bc} = (2N)n.
+$$
 
-  - `r_x^i` rows get `dphi`
-  - `r_p^i` rows get `dpsi`
-
-- For all `i`, for each coordinate `ell = 0..n-1`, perturb `P[i+1, ell]` similarly to approximate:
-
-  - $$\partial\phi/\partial p_{i+1}$$
-  - $$\partial\psi/\partial p_{i+1}$$
-
-  Then add:
-
-  - `r_x^i` rows get `dphi` in columns of `p_{i+1}`
-  - `r_p^i` rows get `dpsi` in columns of `p_{i+1}` (this is the “extra” beyond the linear `-I`)
-
-### Step D — Boundary condition blocks
-- sets `d r_bc / d p_N = I`
-
-- computes `d r_bc / d x_N` by central differences on `bc_block()` with step `eps = 1e-7`:
-
-  - `bc_block()` returns $$p_N + \nabla g(x_N)$$
-  - and it computes $$\nabla g(x_N)$$ internally by central differences with `epsg = 1e-6`
-
-**Important numerical note (nested FD):**  
-`d r_bc / d x_N` is computed by finite differences of a quantity that already uses finite differences for $$\nabla g$$. In practice this acts like a finite-difference approximation of the Hessian of $$g$$ (up to the chosen steps).
+These indices are used to place each $n\times n$ block into the correct rows/columns.
 
 ---
 
-## 8) Numerical / implementation caveats (for future debugging)
+## 7) Implementation walkthrough (block-by-block)
 
-1) **In-place perturbations**
-The function perturbs entries of `X` and `P` **in place** and restores them.  
-This is fine in a single-threaded Newton solve, but be careful if:
-- `X` or `P` is shared elsewhere,
-- you ever attempt parallelization of Jacobian assembly.
+This section is meant to map directly onto the code structure.
 
-2) **Finite difference steps**
-- Local Jacobian FD step: `eps = 1e-7`
-- Gradient of terminal cost: `epsg = 1e-6` inside `bc_block()`
+### 7.1 Sparse assembly strategy (COO triplets → CSR)
 
-If Newton becomes unstable or noisy, one possible knob is tuning these steps.
+Even though $J$ is sparse, repeatedly writing into CSR/CSC with slicing is fragile/slow.
+Therefore the function collects entries as triplets:
 
-3) **Dense storage**
-Even though the Jacobian is block-banded, it is stored in a dense `np.ndarray`.
-If scalability becomes a concern, consider switching to `scipy.sparse` and a sparse linear solver.
+- `rows.append(i)`, `cols.append(j)`, `data.append(value)`
 
-4) **Consistency with `assemble_residual`**
-This Jacobian must remain consistent with the residual definition:
-- gradients evaluated at $$(p_{i+1}, x_i, t_i)$$
-- residual ordering $$F = (r_x^0,r_p^0,\dots,r_{bc})$$
-- unknown ordering $$z=(x_1,\dots,x_N,p_0,\dots,p_N)$$
+and then builds:
 
-If any of those conventions change, update the index maps and block dependencies accordingly.
+```python
+J = coo_matrix((data, (rows, cols)), shape=(m, m)).tocsr()
+J.sum_duplicates()
+```
+
+This is robust: multiple contributions to the same entry (e.g., linear + nonlinear) are safely accumulated.
+
+### 7.2 Adding identity blocks
+
+The helper:
+
+```python
+add_I(rr0, cc0, sign)
+```
+
+adds `sign * I_n` at block position $(rr0:rr0+n,\ cc0:cc0+n)$ by inserting $n$ diagonal entries.
+
+This is used for the exact linear blocks listed in Section 5.1.
+
+### 7.3 Time-step loop $i=0,\dots,N-1$
+
+For each $i$:
+
+#### (A) Linear blocks for $r_x^i$
+- Always add $+I_n$ at columns of $x_{i+1}$.
+- Add $-I_n$ at columns of $x_i$ only if $i\ge 1$ (since $x_0$ is not in $z$).
+
+#### (B) Linear blocks for $r_p^i$
+- Always add $+I_n$ at columns of $p_i$.
+- Always add $-I_n$ at columns of $p_{i+1}$.
+
+#### (C) Nonlinear columns via finite differences
+
+**(C1) Perturbations of $x_i$ (only if $i\ge 1$)**
+
+For each coordinate $\ell=0,\dots,n-1$:
+
+1. Temporarily perturb `X[i, ell]` to $+\texttt{eps}$ and compute `phi(i), psi(i)`.
+2. Perturb to $-\texttt{eps}$ and compute again.
+3. Restore the original value.
+
+This produces column vectors:
+
+- $d\phi \in \mathbb{R}^n$, added into rows of $r_x^i$ at the scalar column corresponding to $x_i^{(\ell)}$,
+- $d\psi \in \mathbb{R}^n$, added into rows of $r_p^i$ at the same column.
+
+**(C2) Perturbations of $p_{i+1}$ (always)**
+
+Similarly, for each coordinate $\ell$, perturb `P[i+1, ell]` and compute:
+
+- $\partial\phi/\partial p_{i+1}^{(\ell)}$ contributes to $r_x^i$ rows,
+- $\partial\psi/\partial p_{i+1}^{(\ell)}$ contributes to $r_p^i$ rows.
+
+Note: for $r_p^i$ the column of $p_{i+1}$ already has a linear contribution $-I_n$; the FD contribution is the *extra nonlinear part*.
+
+### 7.4 Boundary condition blocks
+
+#### (A) $\partial r_{bc}/\partial p_N$
+Add $+I_n$ at the block for $p_N$.
+
+#### (B) $\partial r_{bc}/\partial x_N$ by finite differences
+For each coordinate $\ell$:
+
+1. Perturb `X[N, ell]` to $+\texttt{eps}$ and evaluate:
+
+$$
+\texttt{bc\_block()} = p_N + \nabla g(x_N).
+$$
+
+2. Perturb to $-\texttt{eps}$, evaluate again, then restore.
+
+The resulting column is an approximation to:
+
+$$
+\frac{\partial r_{bc}}{\partial x_N^{(\ell)}} \approx \frac{\texttt{bc\_block}(x_N^{(\ell)}+\texttt{eps})-\texttt{bc\_block}(x_N^{(\ell)}-\texttt{eps})}{2\,\texttt{eps}}.
+$$
+
+**Numerical note (nested FD):** `bc_block()` itself computes $\nabla g$ by finite differences (with `epsg = 1e-6`), so this is effectively a finite-difference approximation of a Hessian-like quantity. This is consistent with how the residual is defined in the repo.
 
 ---
 
-## 9) Complexity (rough)
+## 8) Numerical / debugging notes
 
-Let each call to `eval_H_smooth` cost $C_H$.
+1) **In-place perturbations.**
+The code perturbs entries of `X` and `P` in place and restores them. This is correct in single-thread usage, but it is a red flag if parallelizing Jacobian assembly in the future.
 
-For each step $i$:
-- `x_i`-derivatives (only if `i>=1`): $$2n$$ calls to `eval_H_smooth` (plus/minus for each coordinate) for `phi` and `psi`.
-- `p_{i+1}`-derivatives: $$2n$$ calls similarly.
+2) **Finite difference steps.**
+- Jacobian FD step: `eps = 1e-7`.
+- Terminal gradient FD step (inside `bc_block`): `epsg = 1e-6`.
 
-So per step: about $$4n$$ calls to `eval_H_smooth` (and about $4n-?$ for `i=0` since `x_0` part is skipped).
+If Newton becomes noisy or stagnates, step-size tuning is one of the first knobs to try.
 
-Total: $$O(Nn\,C_H)$$ calls, instead of **global FD** which would be $$O(m\,C_F)$$ with $m=(2N+1)n$ and $C_F\sim O(NC_H)$, i.e. much worse scaling.
+3) **Consistency requirements.**
+This Jacobian is only correct if all conventions match the residual:
+- evaluation at $(p_{i+1}, x_i, t_i)$,
+- residual ordering $F=(r_x^0,r_p^0,\dots,r_{bc})$,
+- unknown ordering $z=(x_1,\dots,x_N,p_0,\dots,p_N)$.
 
----
-
-## 10) Minimal correctness checklist (debug-friendly)
-
-When debugging suspected Jacobian issues, check:
-
-1) Dimensions:
-- `J.shape == ((2*N+1)*n, (2*N+1)*n)`
-
-2) Known exact blocks:
-- `d r_x^i / d x_{i+1} == I`
-- `d r_p^i / d p_i == I`
-- boundary: `d r_bc / d p_N == I`
-
-3) Special case `i=0`:
-- No columns exist for `x_0`, so the code must *not* write `d r_*^0 / d x_0`.
-
-4) Sign conventions:
-- `r_x^i = x_{i+1} - x_i - dt * grad_p`
-- `r_p^i = p_i - p_{i+1} - dt * grad_x`
-
-If you flip signs in the residual, you must flip the corresponding Jacobian blocks.
+If any of these conventions change, you must update both the formulas and the index maps.
 
 ---
 
-## 11) Relationship to the old implementation
+## 9) Minimal correctness checklist (fast sanity tests)
 
-The file still contains the previous “global finite difference” version (commented out).  
-Conceptually, this new routine aims to produce the **same Jacobian** as that global FD approach, but:
-- it avoids building columns that should be structurally zero (locality),
-- it inserts linear blocks exactly,
-- and it uses FD only for the nonlinear sensitivity blocks.
+When debugging Jacobian issues, verify:
 
-This makes the Jacobian assembly significantly cheaper while keeping the implementation relatively simple.
+1) Shape:
+$$
+J.\texttt{shape} = ((2N+1)n,\ (2N+1)n).
+$$
+
+2) Exact identity blocks appear:
+- $\partial r_x^i/\partial x_{i+1}=I_n$,
+- $\partial r_p^i/\partial p_i=I_n$,
+- $\partial r_{bc}/\partial p_N=I_n$.
+
+3) Special case $i=0$:
+No column exists for $x_0$. Therefore no writes should target $x_0$.
+
+4) Signs:
+- $r_x^i = x_{i+1}-x_i-\Delta t_i\nabla_pH_\delta$,
+- $r_p^i = p_i-p_{i+1}-\Delta t_i\nabla_xH_\delta$.
+
+Any sign change in the residual must be mirrored in the Jacobian.
 
 ---
 
+## 10) Complexity (order-of-magnitude)
+
+Let $C_H$ be the cost of one call to `eval_H_smooth`.
+
+Per step $i$:
+- For $p_{i+1}$ derivatives: $2n$ evaluations (plus/minus per coordinate) for both $\phi$ and $\psi$.
+- For $x_i$ derivatives (if $i\ge 1$): another $2n$ evaluations.
+
+So the Jacobian assembly cost scales roughly like:
+
+$$
+O(Nn\,C_H),
+$$
+
+which is much cheaper than global FD on the entire residual (which would scale like $O(m\,C_F)$ with $m=(2N+1)n$ and $C_F\sim O(NC_H)$).
+
+---
