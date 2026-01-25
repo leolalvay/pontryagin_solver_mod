@@ -7,6 +7,8 @@ Pontryagin solver and prints basic diagnostics.  The setup follows
 the problem description in the DeepResearch plan.
 """
 import numpy as np
+import matplotlib.pyplot as plt
+
 
 # The experiments package is a sibling of the core package.  When this script
 # is executed with PYTHONPATH pointing at the `python/src` directory, we can
@@ -45,7 +47,7 @@ def run_example():
     # initial mesh: uniform with 20 segments
     t_nodes = np.linspace(0.0, T, 21)
     # solve adaptively
-    result = solve_optimal_control(prob, t_nodes, tol_time=1e-3, tol_PA=1e-3, tol_delta=1e-3, max_iters=5, delta0=0.1)
+    result = solve_optimal_control(prob, t_nodes, tol_time=1e-3, tol_PA=1e-3, tol_delta=1e-3, max_iters=10, delta0=0.1)
     # extract solution
     print("len(log) =", len(result["log"]))
     print("last outer iter =", result["log"][-1]["iteration"])
@@ -78,6 +80,35 @@ def run_example():
     print("Indicator history:")
     for entry in result['log']:
         print(entry)
+
+    t = np.array(result["t_nodes"])
+    X = np.asarray(result["X"])
+    P = np.asarray(result["P"])
+
+    # X(t)
+    plt.figure()
+    plt.plot(t, X[:, 0], label="x1")
+    plt.plot(t, X[:, 1], label="x2")
+    plt.xlabel("t")
+    plt.title("State trajectory X(t)")
+    plt.legend()
+    plt.tight_layout()
+
+    #plt.savefig("ex1_X.png", dpi=200)
+
+    # P(t)
+    plt.figure()
+    plt.plot(t, P[:, 0], label="p1")
+    plt.plot(t, P[:, 1], label="p2")
+    plt.xlabel("t")
+    plt.title("Costate trajectory P(t)")
+    plt.legend()
+    plt.tight_layout()
+    #plt.savefig("ex1_P.png", dpi=200)
+
+
+    plt.show()
+    
     return result
 
 
