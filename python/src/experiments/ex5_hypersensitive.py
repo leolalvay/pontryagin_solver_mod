@@ -123,7 +123,33 @@ def run_example():
     plt.grid(True)
     plt.savefig("example5_costate_P.pdf", format="pdf", bbox_inches="tight")
 
+    # --- arrays ---
+    rho_bar = np.asarray(result["rhobar"])   # length N
+    r_bar   = np.asarray(result["rbar"])     # length N
+    t_mid   = 0.5*(t[:-1] + t[1:])           # length N
 
+    # Plot rho_bar
+    fig3 = plt.figure()
+    plt.step(t[:-1], np.abs(rho_bar), where="post", label=r"$|\bar{\rho}_n|$")
+    plt.yscale("log")
+    plt.xlabel("t")
+    plt.ylabel(r"$|\bar{\rho}|$")
+    plt.title(r"Example 5: density-like term $\bar{\rho}_n$")   # <-- TEXTO PRIMERO
+    plt.grid(True)
+    plt.legend()
+    plt.savefig("example5_rho_bar.pdf", format="pdf", bbox_inches="tight")
+
+
+    # Plot r_bar
+    fig4 = plt.figure()
+    plt.step(t[:-1], r_bar, where="post", label=r"$\bar{r}_n$")
+    plt.yscale("log")
+    plt.xlabel("t")
+    plt.ylabel(r"$\bar{r}$")
+    plt.title(r"Example 5: time error indicator $\bar{r}_n = |\bar{\rho}_n|\,\Delta t_n^2$")  # <-- TEXTO PRIMERO
+    plt.grid(True, which="both")
+    plt.legend()
+    plt.savefig("example5_r_bar.pdf", format="pdf", bbox_inches="tight")
    
 
     # Show all figures at once
@@ -132,7 +158,8 @@ def run_example():
     # Close figs (optional)
     plt.close(fig1)
     plt.close(fig2)
-
+    plt.close(fig3)
+    plt.close(fig4)
     
 
     return result
