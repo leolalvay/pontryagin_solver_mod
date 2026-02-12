@@ -20,24 +20,21 @@ def run_example():
     # ============================================================
     # 0) Problem definition (matches PDF Example 7)
     # ============================================================
-    x0 = np.array([0.0])   # scalar state, stored as shape (1,)
+    x0 = np.array([1.0])   # scalar state, stored as shape (1,)
     T = 25.0
     gamma = 1e6
 
     def dynamics(x, u, t):
-        # x, u are numpy arrays of shape (1,)
-        y = x[0]
-        a = u[0]
-        return np.array([-(y + 1.0)**3 + a])
+        y = x[0]; a = u[0]
+        return np.array([-(y**3) + a])
 
     def stage_cost(x, u, t):
-        y = x[0]
-        a = u[0]
-        return float((y + 1.0)**2 + a**2)
+        y = x[0]; a = u[0]
+        return float(y**2 + a**2)
 
     def terminal_cost(x):
         yT = x[0]
-        return float(gamma * (yT**2))
+        return float(gamma * ((yT - 1.0)**2))
 
     u_min = np.array([-1.0])
     u_max = np.array([3.0])
@@ -63,11 +60,11 @@ def run_example():
     result = solve_optimal_control(
         prob,
         t_nodes,
-        tol_time=1e-1,   # relaxed -> fewer refinements
-        tol_PA=1e-3,
-        tol_delta=1e-3,
+        tol_time=1e-2,   # relaxed -> fewer refinements
+        tol_PA=1e-2,
+        tol_delta=1e-2,
         max_iters=15,
-        delta0=0.1,
+        delta0=0.02,
     )
 
     print("\nExample 5 (Hypersensitive optimal control)")
@@ -98,7 +95,7 @@ def run_example():
     plt.savefig("example5_tvsdt.pdf", format="pdf", bbox_inches="tight")
     #plt.show()
 
-    X = np.asarray(result["X"])[:, 0]+1.0
+    X = np.asarray(result["X"])[:, 0]
     P = np.asarray(result["P"])[:, 0]
     x0_scalar = float(x0[0])
 

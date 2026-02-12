@@ -5,6 +5,76 @@ from .smoothing import eval_H_smooth
 from .hamiltonian import compute_H
 from .newton import solve_tpbvp
 
+def bootstrap_bundle_from_trajectory(
+    problem,
+    t_nodes: np.ndarray,
+    X: np.ndarray,
+    P: np.ndarray,
+    bundle,
+    restricted: bool = True,
+    num_support_nodes: int = 20,
+    grid_size: int = 3,
+) -> int:
+    """
+    Minimal bootstrap for PA bundle: add approximate active controls at a few support nodes
+    by doing a cheap 1D grid search over control bounds.
+
+    Returns the number of *new* controls added.
+    """
+    bounds = problem.control_bounds_tuple()
+    if bounds is None:
+        return 0
+
+    u_min, u_max = bounds
+    m = int(u_min.size)
+    if m != 1:
+        # Minimal-change version: only handle scalar control for now.
+        return 0
+
+    N = len(t_nodes) - 1
+    if N <= 0:
+        return 0
+
+    # pick a few representative node indices (including endpoints)
+    k = min(num_support_nodes, N + 1)
+    idx = np.unique(np.round(np.linspace(0, N, k)).astype(int))
+
+    u_grid = np.linspace(float(u_min[0]), float(u_max[0]), int(grid_size))
+
+    added = 0
+    for i in idx:
+        x_i = X[i]
+        p_i = P[i]
+        t_i = float(t_nodes[i])
+
+        best_val = np.inf
+        best_u = None
+
+        for a in u_grid:
+            u = np.array([a], dtype=float)
+
+            if not problem.admissible_control(u):
+                continue
+            if restricted:
+                # keep consistent with compute_H(..., restricted=True)
+                if hasattr(problem, "tangent_ok") and (not problem.tangent_ok(x_i, u, t_i)):
+                    continue
+
+            val = float(np.dot(p_i, problem.f(x_i, u, t_i)) + problem.l(x_i, u, t_i))
+            if val < best_val:
+                best_val = val
+                best_u = u
+
+        if best_u is not None:
+            before = bundle.num_planes()
+            bundle.add_control(best_u)
+            if bundle.num_planes() > before:
+                added += 1
+
+    return added
+
+
+
 def solve_optimal_control(
     problem,
     initial_mesh: np.ndarray,
@@ -64,11 +134,29 @@ def solve_optimal_control(
     # initial guesses for X and P: None (will be set in Newton)
     X_guess = None
     P_guess = None
-    s_time = 0.5                   # paper parameter s
+    s_time = 0.25                   # paper parameter s
     K_time = 1e-6                  # paper parameter K
     for k in range(max_iters):
         # solve TPBVP on current mesh with current bundle and delta
         X, P, info = solve_tpbvp(problem, t_nodes, bundle, delta, X_guess, P_guess)
+        # --- bootstrap PA bundle after first coarse solve (minimal change) ---
+        if k == 0:
+            M_before = bundle.num_planes()
+            added = bootstrap_bundle_from_trajectory(
+                problem,
+                t_nodes=t_nodes,
+                X=X,
+                P=P,
+                bundle=bundle,
+                restricted=True,
+                num_support_nodes=12,
+                grid_size=51,
+            )
+            print(f"[bootstrap] M_before={M_before}, added={added}, M_after={bundle.num_planes()}")
+            if added > 0:
+                # re-solve once with improved bundle (same mesh, same delta)
+                X_guess, P_guess = X, P
+                X, P, info = solve_tpbvp(problem, t_nodes, bundle, delta, X_guess, P_guess)
         delta_solved = delta
         # compute error indicators
         #=======================================================================
@@ -347,15 +435,47 @@ def solve_optimal_control(
         eta_time = float(np.max(eta_time_local)) if N > 0 else 0.0
         tol_time_star = float(tol_time / N) if N > 0 else tol_time
         mark_thr = float(s_time * tol_time / N) if N > 0 else 0.0
+        # --- recompute eta_PA at final (consistent with returned X,P,t_nodes,bundle,delta) ---
+        eta_PA = 0.0
+        for i in range(N):
+            Hbar_i, _ = bundle.evaluate(problem, P[i], X[i], t_nodes[i])
+            Hbar_ip1, _ = bundle.evaluate(problem, P[i + 1], X[i + 1], t_nodes[i + 1])
+
+            H_i, _ = compute_H(problem, P[i], X[i], t_nodes[i], bundle.controls, restricted=True)
+            H_ip1, _ = compute_H(problem, P[i + 1], X[i + 1], t_nodes[i + 1], bundle.controls, restricted=True)
+
+            gap_i = Hbar_i - H_i
+            gap_ip1 = Hbar_ip1 - H_ip1
+            dt_i = t_nodes[i + 1] - t_nodes[i]
+            eta_PA += 0.5 * (gap_i + gap_ip1) * dt_i
+
+        # --- recompute eta_delta at final ---
+        eta_delta = 0.0
+        for i in range(N):
+            Hdelta_i, _, _ = eval_H_smooth(problem, bundle, P[i], X[i], t_nodes[i], delta)
+            Hdelta_ip1, _, _ = eval_H_smooth(problem, bundle, P[i + 1], X[i + 1], t_nodes[i + 1], delta)
+
+            Hbar_i, _ = bundle.evaluate(problem, P[i], X[i], t_nodes[i])
+            Hbar_ip1, _ = bundle.evaluate(problem, P[i + 1], X[i + 1], t_nodes[i + 1])
+
+            diff_i = Hbar_i - Hdelta_i
+            diff_ip1 = Hbar_ip1 - Hdelta_ip1
+            dt_i = t_nodes[i + 1] - t_nodes[i]
+            eta_delta += 0.5 * (diff_i + diff_ip1) * dt_i
+
+
         if len(log) > 0:
             log.append({
                 'iteration': log[-1]['iteration'] + 1,
                 'N': len(t_nodes) - 1,
                 'M': bundle.num_planes(),
                 'delta': delta,
-                'eta_time': log[-1]['eta_time'],   # (opcional) si quieres exactitud, luego lo recalculamos
-                'eta_PA': log[-1]['eta_PA'],
-                'eta_delta': log[-1]['eta_delta'],
+                'eta_time': eta_time,
+                'eta_PA': eta_PA,
+                'eta_delta': eta_delta,
+                #'eta_time': log[-1]['eta_time'],   # (opcional) si quieres exactitud, luego lo recalculamos
+                #'eta_PA': log[-1]['eta_PA'],
+                #'eta_delta': log[-1]['eta_delta'],
                 'newton_iter': info['iterations'],
                 'newton_residual': info['residual_norm'],
                 'note': 'final_resolve',

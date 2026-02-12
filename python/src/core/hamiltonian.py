@@ -48,6 +48,11 @@ def compute_H(problem, p: np.ndarray, x: np.ndarray, t: float, candidate_control
         for combo in product([0, 1], repeat=m):
             u = np.where(np.array(combo) == 0, u_min, u_max)
             candidates.append(u)
+        # --- minimal fix: enrich candidate set for scalar control (m=1) ---
+        if m == 1:
+            u_grid = np.linspace(float(u_min[0]), float(u_max[0]), 203)
+            for a in u_grid:
+                candidates.append(np.array([a], dtype=float))
     # include provided controls
     for u in candidate_controls:
         # ensure u is within bounds (project if necessary)

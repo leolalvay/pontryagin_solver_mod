@@ -15,6 +15,235 @@ solve_optimal_control(problem, initial_mesh, tol_time, tol_PA, tol_delta, max_it
 It returns a dictionary containing the final $(t\_\text{nodes}, X, P)$, the final bundle, final $\delta$, and a per-iteration log.
 
 ---
+### `bootstrap_bundle_from_trajectory`
+
+This helper implements a **minimal bootstrap** for the PA bundle: after a first coarse solve has produced a trajectory $(X,P)$, we add a few **approximately active controls** to the bundle so that the piecewise-affine surrogate $\bar H$ becomes a better approximation of the Hamiltonian in the region of costates actually visited by the solver.
+
+---
+
+#### Mathematical background
+
+For fixed $(x,t)$, define the affine function in $p$
+$$
+h_u(p;x,t) := p^\top f(x,u,t) + \ell(x,u,t).
+$$
+
+With the “min” convention, the Hamiltonian is
+$$
+H(p;x,t) = \min_{u\in A} \; h_u(p;x,t),
+$$
+hence $H(\cdot;x,t)$ is **concave in $p$** (a pointwise minimum of affine functions).
+
+The PA bundle surrogate restricts the minimization to a **finite** set of controls $U_{\text{bundle}}$:
+$$
+\bar H(p;x,t) = \min_{u\in U_{\text{bundle}}} \; h_u(p;x,t),
+$$
+so $\bar H(p;x,t) \ge H(p;x,t)$. Improving $\bar H$ requires enriching $U_{\text{bundle}}$ with controls that are (approximately) optimal for representative triplets $(x_i,p_i,t_i)$.
+
+This function enriches $U_{\text{bundle}}$ by computing, at a small set of support nodes,
+$$
+\hat u_i \approx \arg\min_{u\in [u_{\min},u_{\max}]} \Big(p_i^\top f(x_i,u,t_i) + \ell(x_i,u,t_i)\Big),
+$$
+using a cheap 1D grid search (minimal-change version: **scalar control only**, $m=1$).
+
+---
+
+#### Signature
+
+```python
+def bootstrap_bundle_from_trajectory(
+    problem,
+    t_nodes: np.ndarray,
+    X: np.ndarray,
+    P: np.ndarray,
+    bundle,
+    restricted: bool = True,
+    num_support_nodes: int = 8,
+    grid_size: int = 20,
+) -> int:
+    ...
+```
+
+---
+
+#### What the key code blocks do
+
+##### 1) Read bounds and enforce the “minimal” scope ($m=1$)
+
+```python
+bounds = problem.control_bounds_tuple()
+if bounds is None:
+    return 0
+
+u_min, u_max = bounds
+m = int(u_min.size)
+if m != 1:
+    return 0
+```
+
+- The bootstrap relies on a **1D grid** in the control interval. If the problem has no bounds, or if the control is not scalar, this minimal version exits early and makes no changes.
+
+##### 2) Pick a small set of representative “support nodes” along the mesh
+
+```python
+N = len(t_nodes) - 1
+k = min(num_support_nodes, N + 1)
+idx = np.unique(np.round(np.linspace(0, N, k)).astype(int))
+```
+
+- The trajectory $(X,P)$ is available at nodes $t_0,\dots,t_N$.
+- Instead of using every node (expensive), we select a small set of indices `idx` that are roughly **uniformly spread** across $[0,T]$ and include endpoints.
+- These are the points where we will compute approximately active controls.
+
+##### 3) Build a cheap 1D control grid in $[u_{\min},u_{\max}]$
+
+```python
+u_grid = np.linspace(float(u_min[0]), float(u_max[0]), int(grid_size))
+```
+
+- This discretizes the admissible interval. The grid resolution controls the tradeoff:
+  - larger `grid_size` $\Rightarrow$ better $\hat u_i$ but more evaluations of $f$ and $\ell$;
+  - smaller `grid_size` $\Rightarrow$ cheaper but coarser.
+
+##### 4) At each support node, solve a discrete inner minimization
+
+```python
+best_val = np.inf
+best_u = None
+
+for a in u_grid:
+    u = np.array([a], dtype=float)
+
+    val = float(np.dot(p_i, problem.f(x_i, u, t_i)) + problem.l(x_i, u, t_i))
+    if val < best_val:
+        best_val = val
+        best_u = u
+```
+
+- This is the discrete analogue of
+  $$\min_{u\in [u_{\min},u_{\max}]} \; h_u(p_i;x_i,t_i).$$
+- For each grid point $u=[a]$, we evaluate $h_u$ and keep the best one.
+- The winner `best_u` is the bootstrap approximation $\hat u_i$.
+
+##### 5) Optional viability / restriction checks (consistency with `restricted=True`)
+
+```python
+if not problem.admissible_control(u):
+    continue
+
+if restricted:
+    if hasattr(problem, "tangent_ok") and (not problem.tangent_ok(x_i, u, t_i)):
+        continue
+```
+
+- `admissible_control` enforces basic feasibility (e.g., bounds, user-defined rules).
+- If `restricted=True`, we also enforce viability via `tangent_ok` when available, mirroring the “restricted Hamiltonian” setting used elsewhere.
+
+##### 6) Add the new control to the bundle (with deduplication)
+
+```python
+before = bundle.num_planes()
+bundle.add_control(best_u)
+if bundle.num_planes() > before:
+    added += 1
+```
+
+- `bundle.add_control` uses an $L^2$ tolerance to avoid inserting duplicates.
+- We count how many **new** controls were actually added and return that number.
+
+---
+
+#### Return value
+
+- Returns the number of **new** (previously absent) controls added to the bundle.
+
+---
+
+#### Minimal implementation (as used in this repo)
+
+```python
+def bootstrap_bundle_from_trajectory(
+    problem,
+    t_nodes: np.ndarray,
+    X: np.ndarray,
+    P: np.ndarray,
+    bundle,
+    restricted: bool = True,
+    num_support_nodes: int = 8,
+    grid_size: int = 20,
+) -> int:
+    """
+    Minimal bootstrap for PA bundle: add approximate active controls at a few support nodes
+    by doing a cheap 1D grid search over control bounds.
+
+    Returns the number of *new* controls added.
+    """
+    bounds = problem.control_bounds_tuple()
+    if bounds is None:
+        return 0
+
+    u_min, u_max = bounds
+    m = int(u_min.size)
+    if m != 1:
+        # Minimal-change version: only handle scalar control for now.
+        return 0
+
+    N = len(t_nodes) - 1
+    if N <= 0:
+        return 0
+
+    # pick a few representative node indices (including endpoints)
+    k = min(num_support_nodes, N + 1)
+    idx = np.unique(np.round(np.linspace(0, N, k)).astype(int))
+
+    u_grid = np.linspace(float(u_min[0]), float(u_max[0]), int(grid_size))
+
+    added = 0
+    for i in idx:
+        x_i = X[i]
+        p_i = P[i]
+        t_i = float(t_nodes[i])
+
+        best_val = np.inf
+        best_u = None
+
+        for a in u_grid:
+            u = np.array([a], dtype=float)
+
+            if not problem.admissible_control(u):
+                continue
+            if restricted:
+                # keep consistent with compute_H(..., restricted=True)
+                if hasattr(problem, "tangent_ok") and (not problem.tangent_ok(x_i, u, t_i)):
+                    continue
+
+            val = float(np.dot(p_i, problem.f(x_i, u, t_i)) + problem.l(x_i, u, t_i))
+            if val < best_val:
+                best_val = val
+                best_u = u
+
+        if best_u is not None:
+            before = bundle.num_planes()
+            bundle.add_control(best_u)
+            if bundle.num_planes() > before:
+                added += 1
+
+    return added
+```
+
+---
+
+#### How it fits into the solver loop
+
+The bootstrap is intended to be called **once**, immediately after the first coarse TPBVP solve:
+
+1. Solve once with a minimal initial bundle.
+2. Call `bootstrap_bundle_from_trajectory(...)` to enrich `bundle.controls`.
+3. Re-solve once with the improved bundle (same mesh, same $\delta$).
+4. Proceed with the usual adaptivity loop.
+
+This provides a low-cost, structure-preserving improvement of the initial PA bundle without redesigning the surrogate machinery.
+
 
 ## 0) Objects and dimensions (what is being manipulated)
 

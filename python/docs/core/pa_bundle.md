@@ -258,3 +258,75 @@ When you see odd behavior (no improvement in $\eta_{\mathrm{PA}}$, weird control
 ## 8) Key takeaway
 
 The PA bundle stores controls $\{u^{(i)}\}$ and induces a **piecewise-affine upper bound** $\bar H$ of the true Hamiltonian $H$ (upper bound because the minimization is restricted to a subset of admissible controls). It is the main mechanism that makes Hamiltonian evaluation practical and reusable across time, especially in problems where the true minimizer is not captured well by box corners alone (e.g., interior solutions such as LQR).
+
+
+# Bundle vs. Supergradient Planes — Key Conclusions (from our discussion)
+
+## 1) Two different objects: pre-Hamiltonian vs. reduced Hamiltonian
+- Define the **pre-Hamiltonian** (control-dependent):
+  \[
+  g_u(p,x,t) := p^\top f(x,u,t) + \ell(x,u,t).
+  \]
+- Define the **reduced Hamiltonian** (control eliminated):
+  \[
+  H(p,x,t) := \min_{u\in\mathcal U(x,t)} g_u(p,x,t),
+  \]
+  where \(\mathcal U(x,t)\) encodes control bounds and (if used) viability/tangent constraints.
+
+## 2) What the current PA-bundle in the repo actually stores and evaluates
+- The bundle stores a **finite set of controls** \(\mathcal U_B=\{u_1,\dots,u_M\}\).
+- The surrogate is:
+  \[
+  \bar H(p,x,t) := \min_{u\in\mathcal U_B} g_u(p,x,t).
+  \]
+- When the evaluation point changes \((p,x,t)\to(p',x',t')\), the bundle does **not** recompute derivatives or solve a new minimization problem; it simply **re-evaluates** \(f(x',u_i,t')\) and \(\ell(x',u_i,t')\) for the stored \(u_i\) and takes the minimum.
+
+## 3) Why the control-based bundle is a (global) upper bound
+- Since \(H\) is a minimum over all admissible controls:
+  \[
+  H(p,x,t) \le g_u(p,x,t)\quad \forall u\in\mathcal U(x,t).
+  \]
+- If each stored \(u_i\) is admissible at the evaluation point, then:
+  \[
+  H(p,x,t) \le \bar H(p,x,t)\quad \forall (p,x,t),
+  \]
+  i.e., the surrogate is an **upper bound globally in \((p,x,t)\)**.
+- **Envelope theorem is not what guarantees the upper bound**. The upper bound comes from “minimum over a subset.”  
+  Envelope/Danskin helps in **enrichment**: it tells you how the active control relates to \(\partial_p H\), and motivates adding good controls.
+
+## 4) Why the bundle can be a good or bad approximation at a new point
+- Evaluating \(\bar H(p,x,t)\) at a new point is **not** “applying envelope theorem.”
+- A stored control \(u_i\) may have been optimal at \((\hat p_i,\hat x_i,\hat t_i)\), but it may be good or bad at a different \((p,x,t)\).
+- The approximation quality is measured by the gap:
+  \[
+  \bar H(p,x,t) - H(p,x,t) \ge 0,
+  \]
+  which is small only if \(\mathcal U_B\) contains a control near-optimal for that point.
+
+## 5) Role of adaptivity (enrichment)
+- If you identify a point where the gap is large, you enrich by computing a “good” (ideally optimal) control \(u^\*(p,x,t)\) for that point and adding it to \(\mathcal U_B\).
+- Adding the true active control at \((\hat p,\hat x,\hat t)\) makes the surrogate **exact at that point** and often improves a neighborhood (unless you are near switching/ties).
+
+## 6) Supergradient-based planes: valid, but not globally reusable in \((x,t)\)
+- For fixed \((x,t)\), \(p\mapsto H(p,x,t)\) is concave, so for \(s\in\partial_p H(\hat p,x,t)\):
+  \[
+  H(p,x,t) \le H(\hat p,x,t) + s^\top(p-\hat p)\quad \forall p.
+  \]
+- If you **freeze** the coefficients (store the plane as a function of \(p\) only) and then reuse it at different \((x',t')\), the upper-bound guarantee generally **breaks**, because the concavity argument is only in \(p\) with \((x,t)\) fixed.
+- A consistent “supergradient bundle” would be **local in \((x,t)\)**: when \((x,t)\) changes, you must recompute \(H(\hat p,x,t)\) and \(\partial_p H(\hat p,x,t)\) (i.e., planes are not reusable across \((x,t)\) unless you can evaluate these quantities as functions).
+
+## 7) Constraints and viability (restricted Hamiltonian)
+- If using a restricted Hamiltonian
+  \[
+  H_K(p,x,t)=\min_{u:\ f(x,u,t)\in T_K(x)} g_u(p,x,t),
+  \]
+  then to preserve the upper-bound property the surrogate must minimize only over **viable** controls at that \((x,t)\), i.e., apply the same feasibility filter (e.g., `tangent_ok`) consistently.
+- Control bounds are handled by projection/clipping; viability depends on the state and may vary with \((x,t)\).
+
+## 8) “Explicit Hamiltonian” as an optional oracle in a universal solver
+- Knowing a closed form for \(H(p,x,t)\) typically implies you can recover the minimizer \(u^\*(p,x,t)\) (possibly by cases / clipping under bounds).
+- In a universal solver, the clean idea is: **optionally** provide an explicit/oracle evaluation for \(H\) (and ideally \(u^\*\)) when available; otherwise fall back to the current numerical routine.
+- This oracle is most useful to:
+  - speed up computing “true” \(H\) for \(\eta_{PA}\),
+  - provide accurate enrichment controls \(u^\*\),
+  - serve as a benchmark/reference example (e.g., hypersensitive control Example 3.1).
