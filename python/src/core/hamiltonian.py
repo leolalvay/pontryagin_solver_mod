@@ -1,8 +1,10 @@
 import numpy as np
 from itertools import product
 from typing import List, Tuple
+from typing import Optional
+from scipy.optimize import minimize_scalar
 
-def compute_H(problem, p: np.ndarray, x: np.ndarray, t: float, candidate_controls: List[np.ndarray], restricted: bool = False) -> Tuple[float, np.ndarray]:
+def compute_H(problem, p: np.ndarray, x: np.ndarray, t: float, candidate_controls: List[np.ndarray], restricted: bool = False,use_oracle: bool = False) -> Tuple[float, np.ndarray]:
     """
     Compute the true Hamiltonian H(p,x,t) or the restricted Hamiltonian H_K(p,x,t).
 
@@ -41,6 +43,17 @@ def compute_H(problem, p: np.ndarray, x: np.ndarray, t: float, candidate_control
     candidates: List[np.ndarray] = []
     # extremes based on bounds
     bounds = problem.control_bounds_tuple()
+# --- Optional oracle fast-path: if u*(x,p,t) exists, return immediately ---
+    if use_oracle and hasattr(problem, "u_star"):
+        u_oracle, ok = problem.u_star(x, p, t, restricted=restricted)
+        if (u_oracle is not None) and (not restricted or ok):
+            u_oracle = np.asarray(u_oracle, dtype=float)
+            if bounds is not None:
+                u_oracle = problem.project_control(u_oracle)
+            # Exact H value at oracle control (no grid / no extra candidates)
+            val_oracle = float(np.dot(p, problem.f(x, u_oracle, t)) + problem.l(x, u_oracle, t))
+            return val_oracle, u_oracle
+
     if bounds is not None:
         u_min, u_max = bounds
         m = u_min.size
@@ -49,10 +62,36 @@ def compute_H(problem, p: np.ndarray, x: np.ndarray, t: float, candidate_control
             u = np.where(np.array(combo) == 0, u_min, u_max)
             candidates.append(u)
         # --- minimal fix: enrich candidate set for scalar control (m=1) ---
-        if m == 1:
-            u_grid = np.linspace(float(u_min[0]), float(u_max[0]), 203)
-            for a in u_grid:
-                candidates.append(np.array([a], dtype=float))
+        #if m == 1:
+            #u_grid = np.linspace(float(u_min[0]), float(u_max[0]), 203)
+            #for a in u_grid:
+                #candidates.append(np.array([a], dtype=float))
+# --- Replace dense grid (m=1) by bounded Brent
+        if (m == 1): 
+            a_lo = float(u_min[0])
+            a_hi = float(u_max[0])
+
+            def obj(a: float) -> float:
+                u = np.array([a], dtype=float)
+                # keep consistent with your pipeline
+                u = problem.project_control(u)
+                # NEW: viability when restricted=True
+                if restricted and hasattr(problem, "tangent_ok"):
+                    if not problem.tangent_ok(x, u, t):
+                        return np.inf
+                if not problem.admissible_control(u):
+                    return np.inf
+                return float(np.dot(p, problem.f(x, u, t)) + problem.l(x, u, t))
+
+            res = minimize_scalar(
+                obj,
+                bounds=(a_lo, a_hi),
+                method="bounded",
+                options={"xatol": 1e-6, "maxiter": 80},
+            )
+            if res.success and np.isfinite(res.fun):
+                candidates.append(np.array([float(res.x)], dtype=float))  
+
     # include provided controls
     for u in candidate_controls:
         # ensure u is within bounds (project if necessary)

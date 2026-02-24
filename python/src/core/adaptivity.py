@@ -1,9 +1,11 @@
 import numpy as np
-
+import atexit
+from pathlib import Path
 from .pa_bundle import PABundle
 from .smoothing import eval_H_smooth
 from .hamiltonian import compute_H
 from .newton import solve_tpbvp
+
 
 def bootstrap_bundle_from_trajectory(
     problem,
@@ -14,38 +16,62 @@ def bootstrap_bundle_from_trajectory(
     restricted: bool = True,
     num_support_nodes: int = 20,
     grid_size: int = 3,
+    use_oracle: bool = False,
 ) -> int:
     """
-    Minimal bootstrap for PA bundle: add approximate active controls at a few support nodes
-    by doing a cheap 1D grid search over control bounds.
-
+    Bootstrap for PA bundle:
+    - If an explicit oracle u_star is available, use it to add candidate controls.
+    - Otherwise (or if oracle is not feasible under `restricted`), fall back to a cheap 1D grid search
+      (only for scalar control with bounds).
     Returns the number of *new* controls added.
     """
-    bounds = problem.control_bounds_tuple()
-    if bounds is None:
-        return 0
 
-    u_min, u_max = bounds
-    m = int(u_min.size)
-    if m != 1:
-        # Minimal-change version: only handle scalar control for now.
-        return 0
+    # detect whether an oracle exists (your OCPProblem.u_star returns (u, ok) or (None, False))
+    has_oracle = hasattr(problem, "u_star")
+
+    bounds = problem.control_bounds_tuple()
+    u_grid = None
+
+    # grid search is only possible if bounds exist and control is scalar
+    if bounds is not None:
+        u_min, u_max = bounds
+        m = int(u_min.size)
+        if m == 1:
+            u_grid = np.linspace(float(u_min[0]), float(u_max[0]), int(grid_size))
 
     N = len(t_nodes) - 1
     if N <= 0:
         return 0
 
-    # pick a few representative node indices (including endpoints)
+    # pick representative node indices (including endpoints)
     k = min(num_support_nodes, N + 1)
     idx = np.unique(np.round(np.linspace(0, N, k)).astype(int))
 
-    u_grid = np.linspace(float(u_min[0]), float(u_max[0]), int(grid_size))
-
     added = 0
+
     for i in idx:
         x_i = X[i]
         p_i = P[i]
         t_i = float(t_nodes[i])
+
+        # ------------------------------------------------------------
+        # 1) Try oracle u_star first (does projection to bounds inside u_star)
+        # ------------------------------------------------------------
+        if use_oracle and has_oracle:
+            u_oracle, ok = problem.u_star(x_i, p_i, t_i, restricted=restricted)
+            if (u_oracle is not None) and (not restricted or ok):
+                before = bundle.num_planes()
+                bundle.add_control(u_oracle)
+                if bundle.num_planes() > before:
+                    added += 1
+                # oracle succeeded -> no need for grid search at this node
+                continue
+
+        # ------------------------------------------------------------
+        # 2) Fallback: grid search (only if available)
+        # ------------------------------------------------------------
+        if u_grid is None:
+            continue
 
         best_val = np.inf
         best_u = None
@@ -56,7 +82,6 @@ def bootstrap_bundle_from_trajectory(
             if not problem.admissible_control(u):
                 continue
             if restricted:
-                # keep consistent with compute_H(..., restricted=True)
                 if hasattr(problem, "tangent_ok") and (not problem.tangent_ok(x_i, u, t_i)):
                     continue
 
@@ -83,6 +108,11 @@ def solve_optimal_control(
     tol_delta: float = 1e-3,
     max_iters: int = 10,
     delta0: float = 0.1,
+    verbose: bool =  True,
+    print_every: int=1,
+    log_path: str = "logs/last_run.txt",
+    use_oracle_bootstrap: bool = False,
+    use_oracle_PA: bool = False,
 ):
     """
     Solve an optimal control problem adaptively by refining time mesh,
@@ -110,6 +140,21 @@ def solve_optimal_control(
     dict
         Dictionary with solution, mesh, bundle, delta, and log information.
     """
+# -------------------------
+    # Persistent run log file (overwritten each run)
+    # -------------------------
+    log_f = None
+    if log_path is not None:
+        Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+        log_f = open(log_path, "w", buffering=1)  # overwrite, line-buffered
+        atexit.register(log_f.close)
+
+    def _log(msg: str):
+        if verbose:
+            print(msg, flush=True)
+        if log_f is not None:
+            print(msg, file=log_f, flush=True)
+
     # copy mesh
     t_nodes = np.asarray(initial_mesh, dtype=float).copy()
     # initialize PA bundle with zero control if dimension known, otherwise empty
@@ -151,6 +196,7 @@ def solve_optimal_control(
                 restricted=True,
                 num_support_nodes=12,
                 grid_size=51,
+                use_oracle=use_oracle_bootstrap,
             )
             print(f"[bootstrap] M_before={M_before}, added={added}, M_after={bundle.num_planes()}")
             if added > 0:
@@ -189,125 +235,7 @@ def solve_optimal_control(
             eta_time = 0.0
             tol_time_star = tol_time
             mark_thr = 0.0
-        '''
-        N = len(t_nodes) - 1
-        eta_time_local = np.zeros(N)
-        grad_p_list = []
-        grad_x_list = []
-        # compute gradients at nodes for time error and smoothing error
-        Hdelta_list =[]
-        for i in range(N + 1):
-            # grad_p, grad_x at each node
-            # use smoothing evaluation
-            Hdelta_i, grad_p_i, grad_x_i = eval_H_smooth(problem, bundle, P[i], X[i], t_nodes[i], delta)
-            Hdelta_list.append(Hdelta_i)
-            grad_p_list.append(grad_p_i)
-            grad_x_list.append(grad_x_i)
-        # compute local error indicator as difference of gradient across interval
-        for i in range(N):
-            dt = t_nodes[i + 1] - t_nodes[i]
-            gp0 = grad_p_list[i]
-            gp1 = grad_p_list[i + 1]
-            gx0 = grad_x_list[i]
-            gx1 = grad_x_list[i + 1]
-            # measure change
-            diff_gp = gp1 - gp0
-            diff_gx = gx1 - gx0
-            eta_time_local[i] = dt * (np.linalg.norm(diff_gp) + np.linalg.norm(diff_gx))
-        eta_time = np.max(eta_time_local) if N > 0 else 0.0
-        '''
-
-        # ======== DIAG: CURRENT REPO TIME INDICATOR (eta_time_local) ========
-        '''
-        if N > 0:
-            dg_idx = int(np.argmax(eta_time_local))
-            dg_dt = t_nodes[dg_idx + 1] - t_nodes[dg_idx]
-
-            dg_gp0 = grad_p_list[dg_idx]
-            dg_gp1 = grad_p_list[dg_idx + 1]
-            dg_gx0 = grad_x_list[dg_idx]
-            dg_gx1 = grad_x_list[dg_idx + 1]
-
-            dg_dgp = dg_gp1 - dg_gp0
-            dg_dgx = dg_gx1 - dg_gx0
-            dg_norm_dgp = float(np.linalg.norm(dg_dgp))
-            dg_norm_dgx = float(np.linalg.norm(dg_dgx))
-
-            dg_err = float(eta_time_local[dg_idx])
-            dg_marked = np.where(eta_time_local > tol_time)[0]
-
-            print(f"\n[iter {k}] TIME-ADAPT DIAG (repo-current)  N={N}  M(bundle)={bundle.num_planes()}  delta={delta:.3e}")
-            print(f"[iter {k}] GLOBAL: eta_time = max_i eta_time_local[i] = {eta_time:.6e}   vs   tol_time = {tol_time:.6e}")
-            print(f"[iter {k}] REFINE rule (repo): refine interval i if eta_time_local[i] > tol_time  -> marked = {len(dg_marked)}")
-            if len(dg_marked) > 0:
-                print(f"[iter {k}] first marked indices (up to 10): {dg_marked[:10].tolist()}")
-
-            print(f"[iter {k}] WORST interval (argmax): i*={dg_idx}, t_i={t_nodes[dg_idx]:.6e}, dt={dg_dt:.6e}")
-            print(f"[iter {k}] eta_time_local(i*) = dt*(||ΔHp|| + ||ΔHx||) = {dg_err:.6e}")
-            print(f"[iter {k}] components: dt*||ΔHp|| = {dg_dt*dg_norm_dgp:.6e},  dt*||ΔHx|| = {dg_dt*dg_norm_dgx:.6e}")
-            print(f"[iter {k}] norms: ||ΔHp|| = {dg_norm_dgp:.6e},  ||ΔHx|| = {dg_norm_dgx:.6e}")
-        else:
-            print(f"\n[iter {k}] TIME-ADAPT DIAG (repo-current)  N=0  (nothing to compute)")
-            '''
-# ======== END DIAG ========
-
-        #============================================================================
-        #========================= DIAGNOSIS ========================================
-        # --- DIAGNOSTIC (paper-style): rho_n and r_bar_n at current iteration ---
-        # ---- parameters for paper marking ----
-        '''
-        dg_s = 0.5   # <-- set s from the paper/your experiment
-        dg_K = 1e-6  # <-- K from the paper/your experiment
-
-        dg_N = len(t_nodes) - 1
-        dg_dt = np.diff(t_nodes)
-
-        if dg_N > 0:
-            dg_dt_max = float(np.max(dg_dt))
-
-            # 1) compute rho_n (at symplectic Euler evaluation point: (p_{n+1}, x_n, t_n))
-            dg_rho = np.zeros(dg_N)
-            for dg_n in range(dg_N):
-                _, dg_Hp, dg_Hx = eval_H_smooth(problem, bundle, P[dg_n + 1], X[dg_n], t_nodes[dg_n], delta)
-                dg_rho[dg_n] = -0.5 * float(np.dot(dg_Hp, dg_Hx))
-
-            # 2) paper regularization: rho_bar_n = sgn(rho_n) * max(|rho_n|, K*sqrt(dt_max))
-            dg_floor = dg_K * np.sqrt(dg_dt_max)
-            dg_rho_bar = np.sign(dg_rho) * np.maximum(np.abs(dg_rho), dg_floor)
-
-            # 3) indicators: r_bar_n = |rho_bar_n| * dt_n^2
-            dg_r_bar = np.abs(dg_rho_bar) * (dg_dt ** 2)
-
-            # 4) paper thresholds
-            dg_stop_thr = tol_time / dg_N              # TOL/N
-            dg_mark_thr = dg_s * tol_time / dg_N       # s*TOL/N
-
-            # key quantities
-            dg_r_star = float(np.max(dg_r_bar))         # max_n r_bar_n
-            dg_n_star = int(np.argmax(dg_r_bar))        # argmax
-            dg_marked = np.where(dg_r_bar > dg_mark_thr)[0]
-
-            # prints (minimal + paper-aligned)
-            print(f"\n[iter {k}] TIME-ADAPT DIAG (paper)  N={dg_N}  M(bundle)={bundle.num_planes()}  delta={delta:.3e}")
-            print(f"[iter {k}] floor term: K*sqrt(dt_max) = {dg_floor:.6e}   (dt_max={dg_dt_max:.6e})")
-
-            print(f"[iter {k}] STOP check: r* = max_n r_bar(n) = {dg_r_star:.6e}   vs   TOL/N = {dg_stop_thr:.6e}")
-            print(f"[iter {k}] MARK check: marked if r_bar(n) > s*TOL/N = {dg_mark_thr:.6e} (s={dg_s:.3g})  -> marked = {len(dg_marked)}")
-            if len(dg_marked) > 0:
-                print(f"[iter {k}] first marked indices (up to 10): {dg_marked[:10].tolist()}")
-
-            print(f"[iter {k}] worst interval: n*={dg_n_star}, t_n={t_nodes[dg_n_star]:.6e}, dt={dg_dt[dg_n_star]:.6e}")
-            print(f"[iter {k}] rho_bar(n*) = {dg_rho_bar[dg_n_star]: .6e}   r_bar(n*) = {dg_r_bar[dg_n_star]: .6e}")
-
-            # optional (only to understand degeneracy like your Hp=0 case)
-            _, dg_Hp_star, dg_Hx_star = eval_H_smooth(problem, bundle, P[dg_n_star + 1], X[dg_n_star], t_nodes[dg_n_star], delta)
-            print(f"[iter {k}] Hp(n*) = {dg_Hp_star}   Hx(n*) = {dg_Hx_star}")
-
-        else:
-            print(f"\n[iter {k}] TIME-ADAPT DIAG (paper)  N=0  (nothing to compute)")
-            '''
-#============================================================================
-        #============================================================================
+        
     
         # PA error: integrate (Hbar - H)
         eta_PA = 0.0
@@ -316,8 +244,8 @@ def solve_optimal_control(
             Hbar_i, _ = bundle.evaluate(problem, P[i], X[i], t_nodes[i])
             Hbar_ip1, _ = bundle.evaluate(problem, P[i + 1], X[i + 1], t_nodes[i + 1])
             # compute true H (restricted) at i and i+1
-            H_i, _ = compute_H(problem, P[i], X[i], t_nodes[i], bundle.controls, restricted=True)
-            H_ip1, _ = compute_H(problem, P[i + 1], X[i + 1], t_nodes[i + 1], bundle.controls, restricted=True)
+            H_i, _ = compute_H(problem, P[i], X[i], t_nodes[i], bundle.controls, restricted=True,use_oracle=use_oracle_PA)
+            H_ip1, _ = compute_H(problem, P[i + 1], X[i + 1], t_nodes[i + 1], bundle.controls, restricted=True, use_oracle=use_oracle_PA)
             gap_i = Hbar_i - H_i
             gap_ip1 = Hbar_ip1 - H_ip1
             dt = t_nodes[i + 1] - t_nodes[i]
@@ -350,6 +278,38 @@ def solve_optimal_control(
             'newton_iter': info['iterations'],
             'newton_residual': info['residual_norm'],
         })
+# ------------------------------------------------------------
+        # Per-iteration concise print (1 line): progress + next action
+        # ------------------------------------------------------------
+        if (k % max(int(print_every), 1)) == 0:
+            dt_all = np.diff(t_nodes)
+            dt_min = float(np.min(dt_all)) if dt_all.size else 0.0
+            dt_max_ = float(np.max(dt_all)) if dt_all.size else 0.0
+            n_mark = int(np.sum(eta_time_local > mark_thr)) if N > 0 else 0
+
+            converged = (eta_time <= tol_time_star) and (eta_PA <= tol_PA) and (eta_delta <= tol_delta)
+
+            if converged:
+                action = "STOP"
+            elif eta_time > tol_time_star:
+                action = f"refine_time(marked={n_mark})"
+            elif eta_PA > tol_PA:
+                action = "add_plane"
+            elif eta_delta > tol_delta:
+                action = "delta*=0.5"
+            else:
+                action = "continue"
+
+            _log(
+                f"[adapt {k:02d}] "
+                f"N={N:4d} M={bundle.num_planes():3d} dt=[{dt_min:.2e},{dt_max_:.2e}] delta={delta:.2e} | "
+                f"Newton it={info['iterations']:2d} res={info['residual_norm']:.2e} | "
+                f"eta_time={eta_time:.2e}/{tol_time_star:.2e} "
+                f"eta_PA={eta_PA:.2e}/{tol_PA:.2e} "
+                f"eta_delta={eta_delta:.2e}/{tol_delta:.2e} -> {action}"
+            )
+
+
         # check convergence
         #if (eta_time <= tol_time) and (eta_PA <= tol_PA) and (eta_delta <= tol_delta):
         if (eta_time <= tol_time_star) and (eta_PA <= tol_PA) and (eta_delta <= tol_delta):
@@ -391,7 +351,7 @@ def solve_optimal_control(
             max_idx = 0
             for i in range(N + 1):
                 Hbar_i, _ = bundle.evaluate(problem, P[i], X[i], t_nodes[i])
-                H_i, u_star = compute_H(problem, P[i], X[i], t_nodes[i], bundle.controls, restricted=True)
+                H_i, u_star = compute_H(problem, P[i], X[i], t_nodes[i], bundle.controls, restricted=True, use_oracle=use_oracle_PA)
                 gap = Hbar_i - H_i
                 if gap > max_gap:
                     max_gap = gap
@@ -441,8 +401,8 @@ def solve_optimal_control(
             Hbar_i, _ = bundle.evaluate(problem, P[i], X[i], t_nodes[i])
             Hbar_ip1, _ = bundle.evaluate(problem, P[i + 1], X[i + 1], t_nodes[i + 1])
 
-            H_i, _ = compute_H(problem, P[i], X[i], t_nodes[i], bundle.controls, restricted=True)
-            H_ip1, _ = compute_H(problem, P[i + 1], X[i + 1], t_nodes[i + 1], bundle.controls, restricted=True)
+            H_i, _ = compute_H(problem, P[i], X[i], t_nodes[i], bundle.controls, restricted=True, use_oracle=use_oracle_PA)
+            H_ip1, _ = compute_H(problem, P[i + 1], X[i + 1], t_nodes[i + 1], bundle.controls, restricted=True, use_oracle=use_oracle_PA)
 
             gap_i = Hbar_i - H_i
             gap_ip1 = Hbar_ip1 - H_ip1
@@ -496,3 +456,6 @@ def solve_optimal_control(
         'delta': delta,
         'log': log
     }
+
+  
+

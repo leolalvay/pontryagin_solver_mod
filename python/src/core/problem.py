@@ -65,12 +65,16 @@ class OCPProblem:
         T: float,
         control_bounds: Optional[Tuple[np.ndarray, np.ndarray]] = None,
         state_bounds: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+        hamiltonian_true: Optional[Callable[[np.ndarray, np.ndarray, float], float]] = None,
+        u_star_fn: Optional[Callable[[np.ndarray, np.ndarray, float], np.ndarray]] = None,
     ) -> None:
         self.f_fn = dynamics
         self.l_fn = stage_cost
         self.g_fn = terminal_cost
         self.x0 = np.asarray(x0, dtype=float)
         self.T = float(T)
+        self.hamiltonian_true_fn = hamiltonian_true
+        self.u_star_fn = u_star_fn
         # copy bounds if provided
         if control_bounds is not None:
             u_min, u_max = control_bounds
@@ -136,6 +140,57 @@ class OCPProblem:
         float
         """
         return self.g_fn(x)
+
+
+    def u_star(
+        self,
+        x: np.ndarray,
+        p: np.ndarray,
+        t: float,
+        restricted: bool = False,
+        tol: float = 1e-8,
+    ):
+        """
+        Returns (u, feasible). If u_star_fn is not provided -> (None, False).
+        Always projects to control bounds (if any). If restricted=True, checks tangent_ok.
+        """
+        if self.u_star_fn is None:
+            return None, False
+
+        u_raw = self.u_star_fn(x, p, t)
+        u = np.atleast_1d(np.asarray(u_raw, dtype=float))
+        u = self.project_control(u)
+
+        if restricted and not self.tangent_ok(x, u, t, tol=tol):
+            return u, False
+
+        return u, True
+
+    def hamiltonian_true(
+        self,
+        x: np.ndarray,
+        p: np.ndarray,
+        t: float,
+        restricted: bool = False,
+        tol: float = 1e-8,
+    ):
+        """
+        Returns (H, u, feasible).
+
+        - Uses u_star_fn if available (through self.u_star), so bounds are enforced.
+        - If restricted=True and u_star is not feasible, returns (inf, u, False).
+        """
+        u, ok = self.u_star(x, p, t, restricted=restricted, tol=tol)
+
+        if u is None:
+            raise ValueError("u_star_fn is not provided, cannot compute true Hamiltonian from u_star.")
+
+        if restricted and not ok:
+            return float("inf"), u, False
+
+        H = float(p @ self.f_fn(x, u, t) + self.l_fn(x, u, t))
+        return H, u, True
+
 
     # ------------------------------------------------------------------
     # Control bounds
