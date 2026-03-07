@@ -189,6 +189,10 @@ def solve_optimal_control(
     s_time = 0.25                   # paper parameter s
     K_time = 1e-6                  # paper parameter K
 
+# Hard-disable policy:
+# In explicit Hamiltonian-gradient mode, PA/delta criteria are not used
+# to drive adaptivity decisions (time indicator still drives refinement).
+    explicit_mode = bool(use_explicit_hamiltonian_gradients)
 #==================================== Outer Loop =====================================================
     for k in range(max_iters):
         # solve TPBVP on current mesh with current bundle and delta
@@ -296,15 +300,18 @@ def solve_optimal_control(
             dt_max_ = float(np.max(dt_all)) if dt_all.size else 0.0
             n_mark = int(np.sum(eta_time_local > mark_thr)) if N > 0 else 0
 
-            converged = (eta_time <= tol_time_star) and (eta_PA <= tol_PA) and (eta_delta <= tol_delta)
+            if explicit_mode:
+                converged = (eta_time <= tol_time_star)
+            else:
+                converged = (eta_time <= tol_time_star) and (eta_PA <= tol_PA) and (eta_delta <= tol_delta)  
 
             if converged:
                 action = "STOP"
             elif eta_time > tol_time_star:
                 action = f"refine_time(marked={n_mark})"
-            elif eta_PA > tol_PA:
+            elif (not explicit_mode) and (eta_PA > tol_PA):
                 action = "add_plane"
-            elif eta_delta > tol_delta:
+            elif (not explicit_mode) and (eta_delta > tol_delta):
                 action = "delta*=0.5"
             else:
                 action = "continue"
@@ -320,9 +327,12 @@ def solve_optimal_control(
 
 
         # check convergence
-        #if (eta_time <= tol_time) and (eta_PA <= tol_PA) and (eta_delta <= tol_delta):
-        if (eta_time <= tol_time_star) and (eta_PA <= tol_PA) and (eta_delta <= tol_delta):
-            break
+        if explicit_mode:
+            if eta_time <= tol_time_star:
+                break
+        else:
+            if (eta_time <= tol_time_star) and (eta_PA <= tol_PA) and (eta_delta <= tol_delta):
+                break
         # priority: refine time first, then PA planes, then reduce delta
         
         #if eta_time > tol_time:
@@ -354,7 +364,7 @@ def solve_optimal_control(
             P_guess = np.array(P_new)
             continue
         
-        if eta_PA > tol_PA:
+        if (not explicit_mode) and (eta_PA > tol_PA):
             # add new plane: find worst gap index
             max_gap = -np.inf
             max_idx = 0
@@ -373,7 +383,7 @@ def solve_optimal_control(
             P_guess = P
             continue
         # else reduce delta
-        if eta_delta > tol_delta:
+        if (not explicit_mode) and (eta_delta > tol_delta):
             delta = delta * 0.5
             # do not change mesh or bundle
             X_guess = X
@@ -404,33 +414,32 @@ def solve_optimal_control(
         eta_time = float(np.max(eta_time_local)) if N > 0 else 0.0
         tol_time_star = float(tol_time / N) if N > 0 else tol_time
         mark_thr = float(s_time * tol_time / N) if N > 0 else 0.0
-        # --- recompute eta_PA at final (consistent with returned X,P,t_nodes,bundle,delta) ---
-        eta_PA = 0.0
-        for i in range(N):
-            Hbar_i, _ = bundle.evaluate(problem, P[i], X[i], t_nodes[i])
-            Hbar_ip1, _ = bundle.evaluate(problem, P[i + 1], X[i + 1], t_nodes[i + 1])
 
-            H_i, _ = compute_H(problem, P[i], X[i], t_nodes[i], bundle.controls, restricted=True, use_oracle=use_oracle_PA)
-            H_ip1, _ = compute_H(problem, P[i + 1], X[i + 1], t_nodes[i + 1], bundle.controls, restricted=True, use_oracle=use_oracle_PA)
+        if explicit_mode:
+            eta_PA = 0.0
+            eta_delta = 0.0
+        else:
+            eta_PA = 0.0
+            for i in range(N):
+                Hbar_i, _ = bundle.evaluate(problem, P[i], X[i], t_nodes[i])
+                Hbar_ip1, _ = bundle.evaluate(problem, P[i + 1], X[i + 1], t_nodes[i + 1])
+                H_i, _ = compute_H(problem, P[i], X[i], t_nodes[i], bundle.controls, restricted=True, use_oracle=use_oracle_PA)
+                H_ip1, _ = compute_H(problem, P[i + 1], X[i + 1], t_nodes[i + 1], bundle.controls, restricted=True, use_oracle=use_oracle_PA)
+                gap_i = Hbar_i - H_i
+                gap_ip1 = Hbar_ip1 - H_ip1
+                dt_i = t_nodes[i + 1] - t_nodes[i]
+                eta_PA += 0.5 * (gap_i + gap_ip1) * dt_i
 
-            gap_i = Hbar_i - H_i
-            gap_ip1 = Hbar_ip1 - H_ip1
-            dt_i = t_nodes[i + 1] - t_nodes[i]
-            eta_PA += 0.5 * (gap_i + gap_ip1) * dt_i
-
-        # --- recompute eta_delta at final ---
-        eta_delta = 0.0
-        for i in range(N):
-            Hdelta_i, _, _ = eval_H_smooth(problem, bundle, P[i], X[i], t_nodes[i], delta)
-            Hdelta_ip1, _, _ = eval_H_smooth(problem, bundle, P[i + 1], X[i + 1], t_nodes[i + 1], delta)
-
-            Hbar_i, _ = bundle.evaluate(problem, P[i], X[i], t_nodes[i])
-            Hbar_ip1, _ = bundle.evaluate(problem, P[i + 1], X[i + 1], t_nodes[i + 1])
-
-            diff_i = Hbar_i - Hdelta_i
-            diff_ip1 = Hbar_ip1 - Hdelta_ip1
-            dt_i = t_nodes[i + 1] - t_nodes[i]
-            eta_delta += 0.5 * (diff_i + diff_ip1) * dt_i
+            eta_delta = 0.0
+            for i in range(N):
+                Hdelta_i, _, _ = eval_H_smooth(problem, bundle, P[i], X[i], t_nodes[i], delta)
+                Hdelta_ip1, _, _ = eval_H_smooth(problem, bundle, P[i + 1], X[i + 1], t_nodes[i + 1], delta)
+                Hbar_i, _ = bundle.evaluate(problem, P[i], X[i], t_nodes[i])
+                Hbar_ip1, _ = bundle.evaluate(problem, P[i + 1], X[i + 1], t_nodes[i + 1])
+                diff_i = Hbar_i - Hdelta_i
+                diff_ip1 = Hbar_ip1 - Hdelta_ip1
+                dt_i = t_nodes[i + 1] - t_nodes[i]
+                eta_delta += 0.5 * (diff_i + diff_ip1) * dt_i
 
 
         if len(log) > 0:
