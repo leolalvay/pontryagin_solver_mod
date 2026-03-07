@@ -9,7 +9,7 @@ from scipy.sparse import issparse
 
 def solve_tpbvp(problem, t_nodes: np.ndarray, bundle, delta: float,
                  X_init: np.ndarray = None, P_init: np.ndarray = None,
-                 tol: float = 1e-8, max_iter: int = 20) -> tuple:
+                 tol: float = 1e-8, max_iter: int = 20,  use_explicit_hamiltonian_gradients: bool = False) -> tuple:
     """
     Solve the two-point boundary value problem by damped Newton method.
 
@@ -56,12 +56,12 @@ def solve_tpbvp(problem, t_nodes: np.ndarray, bundle, delta: float,
     z = pack_unknowns(X_init, P_init)
     # Newton iteration
     for it in range(max_iter):
-        F = shooting_residual(problem, t_nodes, z, bundle, delta)
+        F = shooting_residual(problem, t_nodes, z, bundle, delta,use_explicit_gradients=use_explicit_hamiltonian_gradients)
         normF = np.linalg.norm(F, ord=np.inf)
         if normF < tol:
             # converged
             break
-        J = shooting_jacobian(problem, t_nodes, z, bundle, delta)
+        J = shooting_jacobian(problem, t_nodes, z, bundle, delta, use_explicit_gradients=use_explicit_hamiltonian_gradients)
         # solve J * dz = -F (sparse LU on a CSC view of J)
         try:
             lu = splu(csc_matrix(J), permc_spec="COLAMD")
@@ -81,19 +81,19 @@ def solve_tpbvp(problem, t_nodes: np.ndarray, bundle, delta: float,
         # line search
         lam = 1.0
         z_new = z + lam * dz
-        F_new = shooting_residual(problem, t_nodes, z_new, bundle, delta)
+        F_new = shooting_residual(problem, t_nodes, z_new, bundle, delta, use_explicit_gradients=use_explicit_hamiltonian_gradients)
         normF_new = np.linalg.norm(F_new, ord=np.inf)
         # backtracking Armijo
         while normF_new > (1 - 1e-4 * lam) * normF and lam > 1e-4:
             lam *= 0.5
             z_new = z + lam * dz
-            F_new = shooting_residual(problem, t_nodes, z_new, bundle, delta)
+            F_new = shooting_residual(problem, t_nodes, z_new, bundle, delta, use_explicit_gradients=use_explicit_hamiltonian_gradients)
             normF_new = np.linalg.norm(F_new, ord=np.inf)
         z = z_new
     # reconstruct solution
     X_sol, P_sol = unpack_unknowns(z, problem.x0)
     info = {
         'iterations': it + 1,
-        'residual_norm': np.linalg.norm(shooting_residual(problem, t_nodes, z, bundle, delta), ord=np.inf),
+        'residual_norm': np.linalg.norm(shooting_residual(problem, t_nodes, z, bundle, delta, use_explicit_gradients=use_explicit_hamiltonian_gradients), ord=np.inf),
     }
     return X_sol, P_sol, info

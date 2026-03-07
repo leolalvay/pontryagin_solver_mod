@@ -67,6 +67,7 @@ class OCPProblem:
         state_bounds: Optional[Tuple[np.ndarray, np.ndarray]] = None,
         hamiltonian_true: Optional[Callable[[np.ndarray, np.ndarray, float], float]] = None,
         u_star_fn: Optional[Callable[[np.ndarray, np.ndarray, float], np.ndarray]] = None,
+        hamiltonian_grad_fn: Optional[Callable[[np.ndarray, np.ndarray, float], Tuple[np.ndarray, np.ndarray]]] = None,
     ) -> None:
         self.f_fn = dynamics
         self.l_fn = stage_cost
@@ -75,6 +76,7 @@ class OCPProblem:
         self.T = float(T)
         self.hamiltonian_true_fn = hamiltonian_true
         self.u_star_fn = u_star_fn
+        self.hamiltonian_grad_fn = hamiltonian_grad_fn
         # copy bounds if provided
         if control_bounds is not None:
             u_min, u_max = control_bounds
@@ -190,6 +192,14 @@ class OCPProblem:
 
         H = float(p @ self.f_fn(x, u, t) + self.l_fn(x, u, t))
         return H, u, True
+
+    def hamiltonian_gradients(self, x, p, t):
+        if self.hamiltonian_grad_fn is None:
+            raise ValueError("hamiltonian_grad_fn is not provided.")
+        grad_p, grad_x = self.hamiltonian_grad_fn(x, p, t)
+        grad_p = np.atleast_1d(np.asarray(grad_p, dtype=float))
+        grad_x = np.atleast_1d(np.asarray(grad_x, dtype=float))
+        return grad_p, grad_x
 
 
     # ------------------------------------------------------------------

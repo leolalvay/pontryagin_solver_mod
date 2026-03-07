@@ -49,6 +49,13 @@ def run_example():
         lam = p[0]
         return float(-lam * (y**3) - (lam**2) / 4.0 + y**2)
     
+    def hamiltonian_grad_fn(x, p, t):
+        y = x[0]
+        lam = p[0]
+        grad_p = np.array([-(y**3) - 0.5 * lam])         # dH/dp
+        grad_x = np.array([-3.0 * lam * (y**2) + 2.0*y]) # dH/dx
+        return grad_p, grad_x
+
 
     u_min = np.array([-1.0])
     u_max = np.array([3.0])
@@ -64,6 +71,7 @@ def run_example():
         state_bounds=None,
         hamiltonian_true=hamiltonian_true,
         u_star_fn=u_star_fn,
+        hamiltonian_grad_fn=hamiltonian_grad_fn,
     )
 
     # -------------------------
@@ -88,6 +96,7 @@ def run_example():
 
     use_oracle_bootstrap = False   # o True
     use_oracle_PA = True
+    use_explicit_hamiltonian_gradients = True
     # ============================================================
     # 1) Solve with the repo's adaptive outer loop
     # ============================================================
@@ -104,6 +113,7 @@ def run_example():
         delta0=0.02,
         use_oracle_bootstrap=use_oracle_bootstrap,
         use_oracle_PA=use_oracle_PA,
+        use_explicit_hamiltonian_gradients=use_explicit_hamiltonian_gradients,
     )
     t1 = time.perf_counter()
     wall_time = t1 - t0

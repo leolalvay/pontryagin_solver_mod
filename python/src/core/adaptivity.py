@@ -6,6 +6,12 @@ from .smoothing import eval_H_smooth
 from .hamiltonian import compute_H
 from .newton import solve_tpbvp
 
+def _grads_for_indicators(problem, bundle, p, x, t, delta, use_explicit_hamiltonian_gradients=False):
+    if use_explicit_hamiltonian_gradients and problem.hamiltonian_grad_fn is not None:
+        Hp, Hx = problem.hamiltonian_gradients(x, p, t)
+        return None, Hp, Hx
+    return eval_H_smooth(problem, bundle, p, x, t, delta)
+
 
 def bootstrap_bundle_from_trajectory(
     problem,
@@ -113,6 +119,7 @@ def solve_optimal_control(
     log_path: str = "logs/last_run.txt",
     use_oracle_bootstrap: bool = False,
     use_oracle_PA: bool = False,
+    use_explicit_hamiltonian_gradients: bool = False,
 ):
     """
     Solve an optimal control problem adaptively by refining time mesh,
@@ -181,11 +188,13 @@ def solve_optimal_control(
     P_guess = None
     s_time = 0.25                   # paper parameter s
     K_time = 1e-6                  # paper parameter K
+
+#==================================== Outer Loop =====================================================
     for k in range(max_iters):
         # solve TPBVP on current mesh with current bundle and delta
-        X, P, info = solve_tpbvp(problem, t_nodes, bundle, delta, X_guess, P_guess)
+        X, P, info = solve_tpbvp(problem, t_nodes, bundle, delta, X_guess, P_guess,use_explicit_hamiltonian_gradients=use_explicit_hamiltonian_gradients)
         # --- bootstrap PA bundle after first coarse solve (minimal change) ---
-        if k == 0:
+        if k == 0 and (not use_explicit_hamiltonian_gradients):
             M_before = bundle.num_planes()
             added = bootstrap_bundle_from_trajectory(
                 problem,
@@ -202,7 +211,7 @@ def solve_optimal_control(
             if added > 0:
                 # re-solve once with improved bundle (same mesh, same delta)
                 X_guess, P_guess = X, P
-                X, P, info = solve_tpbvp(problem, t_nodes, bundle, delta, X_guess, P_guess)
+                X, P, info = solve_tpbvp(problem, t_nodes, bundle, delta, X_guess, P_guess,use_explicit_hamiltonian_gradients)
         delta_solved = delta
         # compute error indicators
         #=======================================================================
@@ -220,7 +229,7 @@ def solve_optimal_control(
             rho_bar_arr = np.zeros(N)
             for i in range(N):
                 # evaluate at symplectic-Euler point (p_{i+1}, x_i, t_i)
-                _, Hp, Hx = eval_H_smooth(problem, bundle, P[i + 1], X[i], t_nodes[i], delta)
+                _, Hp, Hx = _grads_for_indicators(problem, bundle, P[i + 1], X[i], t_nodes[i], delta,use_explicit_hamiltonian_gradients=use_explicit_hamiltonian_gradients )
 
                 rho_arr[i] = -0.5 * float(np.dot(Hp, Hx))
                 rho_bar_arr[i] = max(abs(rho_arr[i]), floor)
@@ -372,7 +381,7 @@ def solve_optimal_control(
             continue
     # return final solution and log
     if (X is None) or (len(t_nodes) != X.shape[0]) or (len(t_nodes) != P.shape[0]) or (delta_solved != delta):
-        X, P, info = solve_tpbvp(problem, t_nodes, bundle, delta, X_guess, P_guess)
+        X, P, info = solve_tpbvp(problem, t_nodes, bundle, delta, X_guess, P_guess,use_explicit_hamiltonian_gradients)
         #(final_resolve): At this point we re-solve TPBVP so that (X,P) match the returned `delta`.
         # However, the error indicators (eta_time, eta_PA, eta_delta) below are NOT recomputed at this final delta;
         # they may correspond to the previous outer-iteration values. Recompute them here later if needed.
@@ -387,7 +396,7 @@ def solve_optimal_control(
         rho_bar_arr = np.zeros(N)
 
         for i in range(N):
-            _, Hp, Hx = eval_H_smooth(problem, bundle, P[i + 1], X[i], t_nodes[i], delta)
+            _, Hp, Hx = _grads_for_indicators(problem, bundle, P[i + 1], X[i], t_nodes[i], delta, use_explicit_hamiltonian_gradients=use_explicit_hamiltonian_gradients)
             rho_arr[i] = -0.5 * float(np.dot(Hp, Hx))
             rho_bar_arr[i] = np.sign(rho_arr[i]) * max(abs(rho_arr[i]), floor)
             eta_time_local[i] = abs(rho_bar_arr[i]) * (dt[i] ** 2)

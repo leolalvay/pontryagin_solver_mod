@@ -4,6 +4,13 @@ from scipy.sparse import coo_matrix
 from .smoothing import eval_H_smooth
 from .hamiltonian import compute_H
 
+def _hamiltonian_gradients(problem, bundle, p, x, t, delta, use_explicit_gradients=False):
+    if use_explicit_gradients and problem.hamiltonian_grad_fn is not None:
+        return None, *problem.hamiltonian_gradients(x, p, t)
+    return eval_H_smooth(problem, bundle, p, x, t, delta)
+
+
+
 def pack_unknowns(X: np.ndarray, P: np.ndarray) -> np.ndarray:
     """
     Flatten state and costate trajectories into a single vector.
@@ -57,7 +64,7 @@ def unpack_unknowns(z: np.ndarray, x0: np.ndarray) -> Tuple[np.ndarray, np.ndarr
     P[:, :] = z[N * n:].reshape((N_plus_1, n))
     return X, P
 
-def assemble_residual(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray, bundle, delta: float) -> np.ndarray:
+def assemble_residual(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray, bundle, delta: float, use_explicit_gradients: bool = False) -> np.ndarray:
     """
     Assemble the residual vector for the symplectic Euler discretisation.
 
@@ -93,7 +100,7 @@ def assemble_residual(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
         p_i = P[i]
         p_ip1 = P[i + 1]
         # # gradients evaluated at (p_{i+1}, x_i, t_i)
-        _, grad_p, grad_x = eval_H_smooth(problem, bundle, p_ip1, x_i, t_nodes[i], delta)
+        _, grad_p, grad_x = _hamiltonian_gradients(problem, bundle, p_ip1, x_i, t_nodes[i], delta, use_explicit_gradients)
         # state residual r_x = x_i + dt * grad_p - x_{i+1}
         r_x = x_ip1 - x_i - dt * grad_p  
         residual[offset:offset + n] = r_x
@@ -120,7 +127,7 @@ def assemble_residual(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
     residual[offset:] = r_bc
     return residual
 
-def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray, bundle, delta: float):
+def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray, bundle, delta: float, use_explicit_gradients: bool = False):
     """
     Assemble the Jacobian matrix dF/dz exploiting locality (block stencil) for
     the symplectic Euler residual used in assemble_residual.
@@ -178,7 +185,7 @@ def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
             phi = -dt * grad_p H_delta(p_{i+1}, x_i, t_i)
         """
         dt = t_nodes[i + 1] - t_nodes[i]
-        _, grad_p, _ = eval_H_smooth(problem, bundle, P[i + 1], X[i], t_nodes[i], delta)
+        _, grad_p, _ = _hamiltonian_gradients(problem, bundle, P[i + 1], X[i], t_nodes[i], delta, use_explicit_gradients)
         return -dt * grad_p
 
     def psi(i: int) -> np.ndarray:
@@ -188,7 +195,7 @@ def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
             psi = -dt * grad_x H_delta(p_{i+1}, x_i, t_i)
         """
         dt = t_nodes[i + 1] - t_nodes[i]
-        _, _, grad_x = eval_H_smooth(problem, bundle, P[i + 1], X[i], t_nodes[i], delta)
+        _, _, grad_x = _hamiltonian_gradients(problem, bundle, P[i + 1], X[i], t_nodes[i], delta, use_explicit_gradients)
         return -dt * grad_x
 
     def bc_block() -> np.ndarray:
