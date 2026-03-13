@@ -20,7 +20,7 @@ def run_example():
     # ============================================================
     # 0) Problem definition (matches PDF Example 7)
     # ============================================================
-    x0 = np.array([0.8])   # scalar state, stored as shape (1,)
+    x0 = np.array([0.5])   # scalar state, stored as shape (1,)
     T = 1.0
 
     def dynamics(x, u, t):
