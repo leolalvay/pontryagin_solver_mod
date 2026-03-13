@@ -152,8 +152,16 @@ def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
     n = X.shape[1]
 
     m = (2 * N + 1) * n  # number of unknowns = number of equations
-    eps = 1e-7  # FD step for local Jacobian blocks
+    #eps = 1e-7  # FD step for local Jacobian blocks
 
+    #================= ADDED-=====================
+    eps_x = 1e-7  # FD step for perturbing X
+    eps_p = 1e-7  # FD step for perturbing P
+
+    #if use_explicit_gradients:
+        #for the paper regularization, p-sensitivity is on scale δ near p≈0
+        #eps_p = max(1e-14, min(eps_p, 1e-2 * float(delta)))
+    #===========================================================
     # -------------------------
     # Index maps (repo order)
     # -------------------------
@@ -263,18 +271,18 @@ def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
             for ell in range(n):
                 old = X[i, ell]
 
-                X[i, ell] = old + eps
+                X[i, ell] = old + eps_x
                 phi_p = phi(i)
                 psi_p = psi(i)
 
-                X[i, ell] = old - eps
+                X[i, ell] = old - eps_x
                 phi_m = phi(i)
                 psi_m = psi(i)
 
                 X[i, ell] = old
 
-                dphi = (phi_p - phi_m) / (2 * eps)  # column ell of dphi/dx_i
-                dpsi = (psi_p - psi_m) / (2 * eps)  # column ell of dpsi/dx_i
+                dphi = (phi_p - phi_m) / (2 * eps_x)  # column ell of dphi/dx_i
+                dpsi = (psi_p - psi_m) / (2 * eps_x)  # column ell of dpsi/dx_i
 
                 c = cx_i + ell
                 for r in range(n):
@@ -285,18 +293,18 @@ def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
         for ell in range(n):
             old = P[i + 1, ell]
 
-            P[i + 1, ell] = old + eps
+            P[i + 1, ell] = old + eps_p
             phi_p = phi(i)
             psi_p = psi(i)
 
-            P[i + 1, ell] = old - eps
+            P[i + 1, ell] = old - eps_p
             phi_m = phi(i)
             psi_m = psi(i)
 
             P[i + 1, ell] = old
 
-            dphi = (phi_p - phi_m) / (2 * eps)  # column ell of dphi/dp_{i+1}
-            dpsi = (psi_p - psi_m) / (2 * eps)  # column ell of dpsi/dp_{i+1}
+            dphi = (phi_p - phi_m) / (2 * eps_p)  # column ell of dphi/dp_{i+1}
+            dpsi = (psi_p - psi_m) / (2 * eps_p)  # column ell of dpsi/dp_{i+1}
 
             c = cp_ip1 + ell
             for r in range(n):
@@ -313,15 +321,15 @@ def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
     for ell in range(n):
         old = X[N, ell]
 
-        X[N, ell] = old + eps
+        X[N, ell] = old + eps_x
         fp = bc_block()
 
-        X[N, ell] = old - eps
+        X[N, ell] = old - eps_x
         fm = bc_block()
 
         X[N, ell] = old
 
-        dcol = (fp - fm) / (2 * eps)
+        dcol = (fp - fm) / (2 * eps_x)
         c = cx_N + ell
         for r in range(n):
             rows.append(row_bc + r)
