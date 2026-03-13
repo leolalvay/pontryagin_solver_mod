@@ -9,7 +9,7 @@ from scipy.sparse import issparse
 
 def solve_tpbvp(problem, t_nodes: np.ndarray, bundle, delta: float,
                  X_init: np.ndarray = None, P_init: np.ndarray = None,
-                 tol: float = 1e-8, max_iter: int = 20,  use_explicit_hamiltonian_gradients: bool = False) -> tuple:
+                 tol: float = 1e-8, max_iter: int = 40,  use_explicit_hamiltonian_gradients: bool = False) -> tuple:
     """
     Solve the two-point boundary value problem by damped Newton method.
 
