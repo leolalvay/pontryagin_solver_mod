@@ -86,13 +86,13 @@ def run_example():
     # 1) Solve with the repo's adaptive outer loop
     # ============================================================
     # Start with a uniform mesh (like ex5 style)
-    t_nodes = np.linspace(0.0, T, 41)  # dt=0.025
+    t_nodes = np.linspace(0.0, T, 20)  # dt=0.025
 
     t0 = time.perf_counter()
     result = solve_optimal_control(
         prob,
         t_nodes,
-        tol_time=1e-4,
+        tol_time=1e-5,
         tol_PA=1e-4,
         tol_delta=1e-10,
         max_iters=40,
@@ -198,9 +198,17 @@ def run_example():
     # Cost J (left Riemann, consistent with symplectic Euler's x_i usage)
     J_hat = float(np.sum(dt * (X[:-1] ** 10)))
     J_star = float((0.5 ** 11) / 11.0)
+    rel_err_J = abs(J_hat - J_star) / max(abs(J_star), 1e-16)
+    rho_bar = np.asarray(result["rhobar"], dtype=float)   # length N
+    eta_apost_local = (dt ** 2) * rho_bar
+    eta_apost = float(np.sum(eta_apost_local))
+
     print(f"[check] J_hat = {J_hat:.16e}")
     print(f"[check] J_star = {J_star:.16e}")
     print(f"[check] |J_hat - J_star| = {abs(J_hat - J_star):.3e}")
+    print(f"[check] rel_err_J = {rel_err_J:.3e}")
+    print(f"[apost] estimator sum(dt^2 * rhobar) = {eta_apost:.16e}")
+
 
     err_p_inf = float(np.max(np.abs(P - p_exact)))
     print(f"[check] ||P - P*||_inf = {err_p_inf:.3e}")
@@ -261,7 +269,7 @@ def run_example():
     plt.savefig("example32_control_compare.pdf", format="pdf", bbox_inches="tight")
     plt.close(fig_u)
     # (e) rho_bar and r_bar (from adaptivity)
-    rho_bar = np.asarray(result["rhobar"])  # length N
+    #rho_bar = np.asarray(result["rhobar"])  # length N
     r_bar = np.asarray(result["rbar"])      # length N
 
     fig_rho = plt.figure()
