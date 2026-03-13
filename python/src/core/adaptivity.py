@@ -215,7 +215,7 @@ def solve_optimal_control(
             if added > 0:
                 # re-solve once with improved bundle (same mesh, same delta)
                 X_guess, P_guess = X, P
-                X, P, info = solve_tpbvp(problem, t_nodes, bundle, delta, X_guess, P_guess,use_explicit_hamiltonian_gradients)
+                X, P, info = solve_tpbvp(problem, t_nodes, bundle, delta, X_guess, P_guess,use_explicit_hamiltonian_gradients=use_explicit_hamiltonian_gradients)
         delta_solved = delta
         # compute error indicators
         #=======================================================================
@@ -391,7 +391,7 @@ def solve_optimal_control(
             continue
     # return final solution and log
     if (X is None) or (len(t_nodes) != X.shape[0]) or (len(t_nodes) != P.shape[0]) or (delta_solved != delta):
-        X, P, info = solve_tpbvp(problem, t_nodes, bundle, delta, X_guess, P_guess,use_explicit_hamiltonian_gradients)
+        X, P, info = solve_tpbvp(problem, t_nodes, bundle, delta, X_guess, P_guess,use_explicit_hamiltonian_gradients=use_explicit_hamiltonian_gradients)
         #(final_resolve): At this point we re-solve TPBVP so that (X,P) match the returned `delta`.
         # However, the error indicators (eta_time, eta_PA, eta_delta) below are NOT recomputed at this final delta;
         # they may correspond to the previous outer-iteration values. Recompute them here later if needed.
