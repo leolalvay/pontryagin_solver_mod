@@ -1,27 +1,21 @@
 import numpy as np
 from scipy.optimize import root
 import matplotlib.pyplot as plt
+from pathlib import Path
 
-def init_ex6(
-    T=1.0,
-    x0=0.5,
-    delta=1e-6,
-    N0=20,
-    tol_time=1e-5,
-    max_refine=20,
-):
-    """
-    Initialize Example 3.2 test data in a simple, self-contained way.
+def init_ex6():
+    T = 1.0
+    x0 = 0.5
+    delta = 1e-6
+    N0 = 20
+    tol_time = 1e-6
+    max_refine = 20
 
-    Returns
-    -------
-    params : dict
-        Scalar settings and initial time mesh.
-    model : dict
-        Problem functions: dynamics, costs, H_delta and derivatives.
-    ref : dict
-        Exact/reference functions and J_star for diagnostics.
-    """
+    # adaptivity params (article style)
+    s_mark = 0.25
+    M_sub = 2
+    K_time = 1e-6
+
     if T <= 0:
         raise ValueError("T must be > 0")
     if delta <= 0:
@@ -31,9 +25,9 @@ def init_ex6(
 
     t = np.linspace(0.0, T, N0 + 1)
 
-    # Model (paper-smoothed Hamiltonian)
+    # Model
     def f(x, a, t_):
-        return a  # x' = a
+        return a
 
     def L(x, a, t_):
         return x**10
@@ -67,6 +61,9 @@ def init_ex6(
         "N0": N0,
         "tol_time": tol_time,
         "max_refine": max_refine,
+        "s_mark": s_mark,
+        "M_sub": M_sub,
+        "K_time": K_time,
         "t": t,
     }
 
@@ -88,20 +85,14 @@ def init_ex6(
 
     return params, model, ref
 
+
 def pack_z(x, lam):
-    """
-    x, lam: arrays of length N+1
-    Returns z = [x_1,...,x_N, lam_0,...,lam_N]
-    """
+    # z = [x1..xN, lam0..lamN]
     return np.concatenate([x[1:], lam])
 
 
 def unpack_z(z, x0):
-    """
-    Inverse of pack_z for 1D case.
-    x0 is fixed boundary value x(0).
-    """
-    total = z.size               # = 2N + 1
+    total = z.size  # = 2N+1
     N = (total - 1) // 2
 
     x = np.empty(N + 1)
@@ -110,31 +101,13 @@ def unpack_z(z, x0):
     x[0] = x0
     x[1:] = z[:N]
     lam[:] = z[N:]
-
     return x, lam
 
-import numpy as np
 
 def residual_symplectic_euler(z, params, model):
-    """
-    Residual F(z) for 1D symplectic-Euler discretization of the smoothed PMP system.
-
-    Unknown ordering:
-        z = [x_1, ..., x_N, lam_0, ..., lam_N]   (length 2N+1)
-
-    Residual ordering:
-        F = [r_x^0, r_lam^0, r_x^1, r_lam^1, ..., r_x^{N-1}, r_lam^{N-1}, r_bc]
-          where:
-            r_x^i   = x_{i+1} - x_i - dt_i * dH_dlam(x_i, lam_{i+1})
-            r_lam^i = lam_i - lam_{i+1} - dt_i * dH_dx(x_i, lam_{i+1})
-            r_bc    = lam_N + g_x(x_N)
-
-    For ex6, g(x_T)=0 => g_x(x_N)=0, so r_bc = lam_N.
-    """
     t = params["t"]
     x0 = params["x0"]
 
-    # unpack_z should be your simple helper already added
     x, lam = unpack_z(z, x0)
 
     N = len(t) - 1
@@ -142,8 +115,8 @@ def residual_symplectic_euler(z, params, model):
 
     r = np.zeros(2 * N + 1, dtype=float)
 
-    dH_dlam = model["dH_dlam"]   # analytic: -lam/sqrt(lam^2+delta^2)
-    dH_dx = model["dH_dx"]       # analytic: 10*x^9
+    dH_dlam = model["dH_dlam"]
+    dH_dx = model["dH_dx"]
 
     for i in range(N):
         gp = dH_dlam(x[i], lam[i + 1])  # ∂H/∂λ at (x_i, λ_{i+1})
@@ -152,74 +125,12 @@ def residual_symplectic_euler(z, params, model):
         r[2 * i] = x[i + 1] - x[i] - dt[i] * gp
         r[2 * i + 1] = lam[i] - lam[i + 1] - dt[i] * gx
 
-    # terminal condition λ_N + g_x(x_N)=0 (here g_x=0)
+    # terminal BC: lam_N + g_x(x_N) = 0, and g=0 => lam_N=0
     r[-1] = lam[-1]
-
     return r
 
-def initial_guess(params):
-    """
-    Build a simple initial guess for z = [x1..xN, lam0..lamN].
-    """
-    t = params["t"]
-    x0 = params["x0"]
-    N = len(t) - 1
-
-    # Linear state guess from x0 to 0
-    x_guess = np.linspace(x0, 0.0, N + 1)
-
-    # Zero costate guess
-    lam_guess = np.zeros(N + 1)
-
-    return pack_z(x_guess, lam_guess)
-
-
-def solve_on_mesh(params, model, z0=None, method="hybr", tol=1e-10, maxfev=20000):
-    """
-    Solve F(z)=0 for one fixed mesh using scipy.optimize.root.
-    """
-    if z0 is None:
-        z0 = initial_guess(params)
-
-    sol = root(
-        fun=residual_symplectic_euler,
-        x0=z0,
-        args=(params, model),
-        method=method,           # "hybr" is a good default
-        tol=tol,
-        options={"maxfev": maxfev},
-    )
-
-    # Unpack solution
-    x, lam = unpack_z(sol.x, params["x0"])
-    t = params["t"]
-    N = len(t) - 1
-
-    # Control from symplectic point (x_i, lam_{i+1})
-    a = np.zeros(N)
-    for i in range(N):
-        a[i] = model["dH_dlam"](x[i], lam[i + 1])
-
-    # Cost on mesh (left-point rule, consistent with your setup)
-    dt = np.diff(t)
-    J = np.sum(dt * (x[:-1] ** 10))
-
-    out = {
-        "success": bool(sol.success),
-        "message": sol.message,
-        "nfev": sol.nfev,
-        "res_norm_inf": np.linalg.norm(sol.fun, ord=np.inf),
-        "z": sol.x,
-        "x": x,
-        "lam": lam,
-        "a": a,
-        "J": float(J),
-        "solver_obj": sol,
-    }
-    return out
 
 def jacobian_symplectic_euler(z, params, model):
-
     t = params["t"]
     x0 = params["x0"]
     delta = params["delta"]
@@ -231,11 +142,10 @@ def jacobian_symplectic_euler(z, params, model):
     m = 2 * N + 1
     J = np.zeros((m, m), dtype=float)
 
-    # helper indices in z
-    def ix(k):          # x_k, k=1..N
+    def ix(k):   # x_k, k=1..N
         return k - 1
 
-    def il(j):          # lam_j, j=0..N
+    def il(j):   # lam_j, j=0..N
         return N + j
 
     for i in range(N):
@@ -244,10 +154,10 @@ def jacobian_symplectic_euler(z, params, model):
 
         xi = x[i]
         lip1 = lam[i + 1]
-        den = (lip1 * lip1 + delta * delta)
+        den = lip1 * lip1 + delta * delta
 
         # second derivatives
-        d2H_dlam2 = -(delta * delta) / (den ** 1.5)   # < 0
+        d2H_dlam2 = -(delta * delta) / (den ** 1.5)
         d2H_dx2 = 90.0 * (xi ** 8)
 
         # r_x^i
@@ -259,41 +169,44 @@ def jacobian_symplectic_euler(z, params, model):
         # r_lam^i
         if i >= 1:
             J[rl, ix(i)] += -dt[i] * d2H_dx2
-        # i=0 depends on x0 fixed => no column
         J[rl, il(i)] += +1.0
         J[rl, il(i + 1)] += -1.0
 
-    # boundary r_bc = lam_N
+    # r_bc = lam_N
     J[-1, il(N)] = 1.0
     return J
 
-def solve_on_mesh(params, model, z0=None, tol=1e-10, maxfev=20000):
-    # Initial guess
-    if z0 is None:
-        t = params["t"]
-        x0 = params["x0"]
-        N = len(t) - 1
 
-        x_guess = np.linspace(x0, 0.0, N + 1)
-        lam_guess = np.zeros(N + 1)
-        z0 = pack_z(x_guess, lam_guess)
+def initial_guess(params):
+    t = params["t"]
+    x0 = params["x0"]
+    N = len(t) - 1
+
+    x_guess = np.linspace(x0, 0.0, N + 1)
+    lam_guess = np.zeros(N + 1)
+
+    return pack_z(x_guess, lam_guess)
+
+
+def solve_on_mesh(params, model, z0=None, tol=1e-10, maxfev=20000):
+    if z0 is None:
+        z0 = initial_guess(params)
 
     sol = root(
         fun=residual_symplectic_euler,
         x0=z0,
         args=(params, model),
-        jac=jacobian_symplectic_euler,   # exact Jacobian
+        jac=jacobian_symplectic_euler,
         method="hybr",
         tol=tol,
         options={"maxfev": maxfev},
     )
 
-    # unpack + postprocess
     x, lam = unpack_z(sol.x, params["x0"])
     t = params["t"]
     N = len(t) - 1
     a = np.array([model["dH_dlam"](x[i], lam[i + 1]) for i in range(N)])
-    J = float(np.sum(np.diff(t) * (x[:-1] ** 10)))
+    J_cost = float(np.sum(np.diff(t) * (x[:-1] ** 10)))
 
     return {
         "success": bool(sol.success),
@@ -304,18 +217,13 @@ def solve_on_mesh(params, model, z0=None, tol=1e-10, maxfev=20000):
         "x": x,
         "lam": lam,
         "a": a,
-        "J": J,
+        "J": J_cost,
         "z": sol.x,
         "solver_obj": sol,
     }
 
+
 def compute_time_indicator(params, model, x, lam, K_time=1.0):
-    """
-    Article-aligned indicator:
-      rho_i      = -0.5 * H_lambda * H_x
-      rho_bar_i  = sign(rho_i) * max(|rho_i|, K_time*sqrt(dt_max))
-      r_bar_i    = |rho_bar_i| * dt_i^2
-    """
     t = np.asarray(params["t"], dtype=float)
     x = np.asarray(x, dtype=float)
     lam = np.asarray(lam, dtype=float)
@@ -346,20 +254,19 @@ def compute_time_indicator(params, model, x, lam, K_time=1.0):
     dH_dx = model["dH_dx"]
 
     for i in range(N):
-        Hp = float(dH_dlam(x[i], lam[i + 1]))  # symplectic point
+        Hp = float(dH_dlam(x[i], lam[i + 1]))
         Hx = float(dH_dx(x[i], lam[i + 1]))
         rho_i = -0.5 * Hp * Hx
         rho[i] = rho_i
 
-        # article form: signed rho_bar
         mag = max(abs(rho_i), floor)
         rho_bar_i = np.sign(rho_i) * mag
         rho_bar[i] = rho_bar_i
 
         r_bar[i] = abs(rho_bar_i) * (dt[i] ** 2)
 
-    tol_star = float(params["tol_time"] / N)          # TOL / N
-    mark_thr = float(params["s_mark"] * params["tol_time"] / N)  # s*TOL/N
+    tol_star = float(params["tol_time"] / N)
+    mark_thr = float(params["s_mark"] * params["tol_time"] / N)
 
     return {
         "dt": dt,
@@ -373,23 +280,20 @@ def compute_time_indicator(params, model, x, lam, K_time=1.0):
         "floor": floor,
     }
 
+
 def refine_mesh_article(t_old, r_bar, tol_time, s_mark=0.8, M_sub=2):
-    """
-    Subdivide interval (t_i,t_{i+1}) into M_sub parts if r_bar[i] > s_mark*TOL/N.
-    """
     t_old = np.asarray(t_old, dtype=float)
     N = len(t_old) - 1
     if N <= 0:
         return t_old.copy(), np.array([], dtype=bool)
 
     thr = float(s_mark * tol_time / N)
-    marked = (np.asarray(r_bar) > thr)
+    marked = np.asarray(r_bar) > thr
 
     new_nodes = [t_old[0]]
     for i in range(N):
         a, b = t_old[i], t_old[i + 1]
         if marked[i]:
-            # insert M_sub equal subintervals
             mids = np.linspace(a, b, M_sub + 1)[1:]  # exclude left endpoint
             new_nodes.extend(mids.tolist())
         else:
@@ -398,27 +302,14 @@ def refine_mesh_article(t_old, r_bar, tol_time, s_mark=0.8, M_sub=2):
     t_new = np.asarray(new_nodes, dtype=float)
     return t_new, marked
 
+
 def prolongate_guess(t_old, x_old, lam_old, t_new):
-    """
-    Linear interpolation warm-start on refined mesh.
-    """
     x_new = np.interp(t_new, t_old, x_old)
     lam_new = np.interp(t_new, t_old, lam_old)
     return x_new, lam_new
 
-import numpy as np
 
 def run_adaptivity_test(params, model, ref=None, verbose=True, maxit=None):
-    """
-    Article-style adaptivity loop (time refinement only) with robust while-flow.
-
-    Key behavior:
-    - `iters_used` counts solved+evaluated configurations.
-    - If an update is applied at budget boundary, one extra solve is allowed
-      to resolve that updated configuration (`pending_update` logic).
-    """
-
-    # ---- config ----
     tol_time = float(params["tol_time"])
     s_mark = float(params["s_mark"])
     M_sub = int(params["M_sub"])
@@ -429,7 +320,6 @@ def run_adaptivity_test(params, model, ref=None, verbose=True, maxit=None):
     else:
         maxit = int(maxit)
 
-    # ---- state ----
     t = np.asarray(params["t"], dtype=float).copy()
     z0 = None
     log = []
@@ -440,16 +330,13 @@ def run_adaptivity_test(params, model, ref=None, verbose=True, maxit=None):
     stop_reason = "unknown"
 
     while True:
-        # Stop only if budget exhausted and there is no unresolved update
         if (iters_used >= maxit) and (not pending_update):
             stop_reason = "maxit_reached"
             break
 
-        # Build per-iteration params with current mesh
         p = dict(params)
         p["t"] = t
 
-        # 1) Solve current configuration
         sol = solve_on_mesh(p, model, z0=z0)
         if not sol["success"]:
             stop_reason = "nonlinear_solve_failed"
@@ -465,7 +352,6 @@ def run_adaptivity_test(params, model, ref=None, verbose=True, maxit=None):
         x = sol["x"]
         lam = sol["lam"]
 
-        # 2) Indicators on solved configuration
         ind = compute_time_indicator(p, model, x, lam, K_time=K_time)
 
         N = len(t) - 1
@@ -490,6 +376,9 @@ def run_adaptivity_test(params, model, ref=None, verbose=True, maxit=None):
             "dt_min": float(np.min(ind["dt"])) if N > 0 else 0.0,
             "dt_max": float(np.max(ind["dt"])) if N > 0 else 0.0,
             "floor": float(ind["floor"]),
+            "rho": ind["rho"].copy(),
+            "rho_bar": ind["rho_bar"].copy(),
+            "r_bar": ind["r_bar"].copy(),
         }
 
         if ref is not None:
@@ -509,18 +398,15 @@ def run_adaptivity_test(params, model, ref=None, verbose=True, maxit=None):
                 f"marked={n_marked}"
             )
 
-        # This configuration is solved and evaluated
         iters_used += 1
         pending_update = False
 
-        # 3) Stop criterion (article)
         if eta_time < tol_star:
             converged = True
             stop_reason = "time_tolerance_reached"
-            z0 = sol["z"]  # keep consistent final pack
+            z0 = sol["z"]
             break
 
-        # 4) Decide and apply update (time refinement)
         t_new, marked = refine_mesh_article(
             t_old=t,
             r_bar=ind["r_bar"],
@@ -534,18 +420,12 @@ def run_adaptivity_test(params, model, ref=None, verbose=True, maxit=None):
             z0 = sol["z"]
             break
 
-        # 5) Prolongate warm start to refined mesh
         xg, lg = prolongate_guess(t, x, lam, t_new)
         z0 = pack_z(xg, lg)
 
-        # Commit update and mark pending resolve
         t = t_new
         pending_update = True
 
-        # Loop continues; if budget already reached, one extra resolve is still allowed
-        # because pending_update=True (handled at loop top).
-
-    # ---- final result payload ----
     result = {
         "converged": converged,
         "stop_reason": stop_reason,
@@ -555,8 +435,7 @@ def run_adaptivity_test(params, model, ref=None, verbose=True, maxit=None):
         "log": log,
     }
 
-    # Ensure final fields correspond to current returned mesh
-    # (if last action was update, pending_update would have forced one more solve)
+    # ensure final output corresponds to returned mesh
     p_final = dict(params)
     p_final["t"] = t
     sol_final = solve_on_mesh(p_final, model, z0=z0)
@@ -574,20 +453,13 @@ def run_adaptivity_test(params, model, ref=None, verbose=True, maxit=None):
 
     return result
 
+
 def plot_ex6_results(result, ref, out_prefix="ex6_test"):
-    """
-    Plot:
-      1) dt(t)
-      2) x vs x*
-      3) p vs p*
-      4) a vs a*
-      5) rho, rho_bar
-      6) r_bar
-    Assumes:
-      result has keys: t, x, lam, a, log
-      ref has keys: x_star, p_star, a_star
-      last log entry has: rho, rho_bar, r_bar
-    """
+    if ("log" not in result) or (len(result["log"]) == 0):
+        print("[plot] No iteration log available; skipping plots.")
+        return
+    
+    fig_dir = Path("figures")
 
     t = np.asarray(result["t"], dtype=float)
     x = np.asarray(result["x"], dtype=float)
@@ -601,15 +473,11 @@ def plot_ex6_results(result, ref, out_prefix="ex6_test"):
     p_star = ref["p_star"](t)
     a_star = ref["a_star"](t_int)
 
-    # indicators from last adapt iteration
     last = result["log"][-1]
     rho = np.asarray(last["rho"], dtype=float)
     rho_bar = np.asarray(last["rho_bar"], dtype=float)
     r_bar = np.asarray(last["r_bar"], dtype=float)
 
-    # ------------------------------------------------------------
-    # (1) dt(t)
-    # ------------------------------------------------------------
     fig = plt.figure(figsize=(6, 4))
     plt.step(t_int, dt, where="post", label=r"$\Delta t_n$")
     plt.yscale("log")
@@ -619,12 +487,9 @@ def plot_ex6_results(result, ref, out_prefix="ex6_test"):
     plt.grid(True, which="both")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(f"{out_prefix}_t_vs_dt.pdf", bbox_inches="tight")
+    plt.savefig(fig_dir / f"{out_prefix}_t_vs_dt.pdf", bbox_inches="tight")
     plt.close(fig)
 
-    # ------------------------------------------------------------
-    # (2) state trajectory
-    # ------------------------------------------------------------
     fig = plt.figure(figsize=(6, 4))
     plt.plot(t, x, label="x (computed)", linewidth=2.0)
     plt.plot(t, x_star, "--", label="x* (exact)", linewidth=2.0)
@@ -634,12 +499,9 @@ def plot_ex6_results(result, ref, out_prefix="ex6_test"):
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(f"{out_prefix}_state_x.pdf", bbox_inches="tight")
+    plt.savefig(fig_dir / f"{out_prefix}_state_x.pdf", bbox_inches="tight")
     plt.close(fig)
 
-    # ------------------------------------------------------------
-    # (3) costate trajectory
-    # ------------------------------------------------------------
     fig = plt.figure(figsize=(6, 4))
     plt.plot(t, p, label="p (computed)", linewidth=2.0)
     plt.plot(t, p_star, "--", label="p* (exact)", linewidth=2.0)
@@ -649,12 +511,9 @@ def plot_ex6_results(result, ref, out_prefix="ex6_test"):
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(f"{out_prefix}_costate_p.pdf", bbox_inches="tight")
+    plt.savefig(fig_dir / f"{out_prefix}_costate_p.pdf", bbox_inches="tight")
     plt.close(fig)
 
-    # ------------------------------------------------------------
-    # (4) control trajectory
-    # ------------------------------------------------------------
     fig = plt.figure(figsize=(6, 4))
     plt.step(t_int, a, where="post", label="a (computed)", linewidth=2.0)
     plt.step(t_int, a_star, where="post", linestyle="--", label="a* (exact)", linewidth=2.0)
@@ -664,12 +523,9 @@ def plot_ex6_results(result, ref, out_prefix="ex6_test"):
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(f"{out_prefix}_control_a.pdf", bbox_inches="tight")
+    plt.savefig(fig_dir / f"{out_prefix}_control_a.pdf", bbox_inches="tight")
     plt.close(fig)
 
-    # ------------------------------------------------------------
-    # (5) rho_n and rho_bar_n
-    # ------------------------------------------------------------
     fig = plt.figure(figsize=(6, 4))
     plt.step(t_int, rho, where="post", label=r"$\rho_n$")
     plt.step(t_int, rho_bar, where="post", label=r"$\bar{\rho}_n$")
@@ -679,12 +535,9 @@ def plot_ex6_results(result, ref, out_prefix="ex6_test"):
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(f"{out_prefix}_rho_density.pdf", bbox_inches="tight")
+    plt.savefig(fig_dir / f"{out_prefix}_rho_density.pdf", bbox_inches="tight")
     plt.close(fig)
 
-    # ------------------------------------------------------------
-    # (6) r_bar_n indicator
-    # ------------------------------------------------------------
     fig = plt.figure(figsize=(6, 4))
     plt.step(t_int, r_bar, where="post", label=r"$\bar r_n = |\bar\rho_n|\Delta t_n^2$")
     plt.yscale("log")
@@ -694,31 +547,35 @@ def plot_ex6_results(result, ref, out_prefix="ex6_test"):
     plt.grid(True, which="both")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(f"{out_prefix}_r_indicator.pdf", bbox_inches="tight")
+    plt.savefig(fig_dir / f"{out_prefix}_r_indicator.pdf", bbox_inches="tight")
     plt.close(fig)
 
+
 if __name__ == "__main__":
-    params, model, ref = init_ex6(...)  # your initializer
+    params, model, ref = init_ex6()
     result = run_adaptivity_test(params, model, ref=ref, verbose=True, maxit=20)
-    plot_ex6_results(result, ref, out_prefix="example32_test")
 
-    t = result["t"]
-    x = result["x"]
-    p = result["lam"]
-    a = result["a"]
+    if not result["success"]:
+        print("\n[ERROR] Final solve failed:", result["message"])
+    else:
+        plot_ex6_results(result, ref, out_prefix="example6_test")
 
-    x_star = ref["x_star"](t)
-    p_star = ref["p_star"](t)
-    a_star = ref["a_star"](t[:-1])
+        t = result["t"]
+        x = result["x"]
+        p = result["lam"]
+        a = result["a"]
 
-    print("\n=== FINAL SUMMARY ===")
-    print("converged   :", result["converged"], "| reason:", result["stop_reason"])
-    print("iters_used  :", result["iterations"], "/", result["maxit"])
-    print("N_final     :", len(t) - 1)
-    print("res_inf     :", result["res_inf"])
-    print("J_hat       :", result["J"])
-    print("J_star      :", ref["J_star"])
-    print("||x-x*||inf :", np.max(np.abs(x - x_star)))
-    print("||p-p*||inf :", np.max(np.abs(p - p_star)))
-    print("||a-a*||inf :", np.max(np.abs(a - a_star)))
+        x_star = ref["x_star"](t)
+        p_star = ref["p_star"](t)
+        a_star = ref["a_star"](t[:-1])
 
+        print("\n=== FINAL SUMMARY ===")
+        print("converged   :", result["converged"], "| reason:", result["stop_reason"])
+        print("iters_used  :", result["iterations"], "/", result["maxit"])
+        print("N_final     :", len(t) - 1)
+        print("res_inf     :", result["res_inf"])
+        print("J_hat       :", result["J"])
+        print("J_star      :", ref["J_star"])
+        print("||x-x*||inf :", np.max(np.abs(x - x_star)))
+        print("||p-p*||inf :", np.max(np.abs(p - p_star)))
+        print("||a-a*||inf :", np.max(np.abs(a - a_star)))

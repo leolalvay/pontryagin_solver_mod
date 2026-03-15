@@ -20,6 +20,8 @@ from core.problem import OCPProblem
 from core.adaptivity import solve_optimal_control
 from core.smoothing import eval_H_smooth
 
+from pathlib import Path
+
 def run_example():
     # ============================================================
     # 0) Problem definition (Paper Example 3.2)
@@ -223,14 +225,15 @@ def run_example():
     # 5) Plots (same style as ex5)
     # ============================================================
     # (a) time mesh dt(t)
+    fig_dir = Path("figures")
     fig_dt = plt.figure()
     plt.step(t[:-1], dt, where="post")
     plt.yscale("log")
     plt.xlabel("t")
     plt.ylabel("Δt")
-    plt.title("Example 3.2: Time mesh Δt(t)")
+    plt.title("Example 6: Time mesh Δt(t)")
     plt.grid(True, which="both")
-    plt.savefig("example32_tvsdt.pdf", format="pdf", bbox_inches="tight")
+    plt.savefig(fig_dir/"example6_tvsdt.pdf", format="pdf", bbox_inches="tight")
 
     # (b) state
     fig_x = plt.figure()
@@ -238,10 +241,10 @@ def run_example():
     plt.plot(t, x_exact, "--", label="X* (exact)")
     plt.xlabel("t")
     plt.ylabel("X")
-    plt.title("Example 3.2: State X(t)")
+    plt.title("Example 6: State X(t)")
     plt.legend()
     plt.grid(True)
-    plt.savefig("example32_state_X.pdf", format="pdf", bbox_inches="tight")
+    plt.savefig(fig_dir/"example6_state_X.pdf", format="pdf", bbox_inches="tight")
 
     # (c) costate
     fig_p = plt.figure()
@@ -249,10 +252,10 @@ def run_example():
     plt.plot(t, p_exact, "--", label="P* (exact)")
     plt.xlabel("t")
     plt.ylabel("P")
-    plt.title("Example 3.2: Costate P(t)")
+    plt.title("Example 6: Costate P(t)")
     plt.legend()
     plt.grid(True)
-    plt.savefig("example32_costate_P.pdf", format="pdf", bbox_inches="tight")
+    plt.savefig(fig_dir/"example6_costate_P.pdf", format="pdf", bbox_inches="tight")
 
     # (d) control (active plane)
     fig_u = plt.figure()
@@ -263,10 +266,10 @@ def run_example():
     plt.step(t[:-1], a_exact, where="post", linestyle="--", label=r"$a^*$ (exact)")
     plt.xlabel("t")
     plt.ylabel("a")
-    plt.title("Example 3.2: Control comparison")
+    plt.title("Example 6: Control comparison")
     plt.legend()
     plt.grid(True)
-    plt.savefig("example32_control_compare.pdf", format="pdf", bbox_inches="tight")
+    plt.savefig(fig_dir/"example6_control_compare.pdf", format="pdf", bbox_inches="tight")
     plt.close(fig_u)
     # (e) rho_bar and r_bar (from adaptivity)
     #rho_bar = np.asarray(result["rhobar"])  # length N
@@ -277,20 +280,20 @@ def run_example():
     plt.yscale("log")
     plt.xlabel("t")
     plt.ylabel(r"$|\bar{\rho}|$")
-    plt.title(r"Example 3.2: density-like term $\bar{\rho}_n$")
+    plt.title(r"Example 6: density-like term $\bar{\rho}_n$")
     plt.grid(True, which="both")
     plt.legend()
-    plt.savefig("example32_rho_bar.pdf", format="pdf", bbox_inches="tight")
+    plt.savefig(fig_dir/"example6_rho_bar.pdf", format="pdf", bbox_inches="tight")
 
     fig_r = plt.figure()
     plt.step(t[:-1], r_bar, where="post", label=r"$\bar{r}_n$")
     plt.yscale("log")
     plt.xlabel("t")
     plt.ylabel(r"$\bar{r}$")
-    plt.title(r"Example 3.2: time error indicator $\bar{r}_n = |\bar{\rho}_n|\,\Delta t_n^2$")
+    plt.title(r"Example 6: time error indicator $\bar{r}_n = |\bar{\rho}_n|\,\Delta t_n^2$")
     plt.grid(True, which="both")
     plt.legend()
-    plt.savefig("example32_r_bar.pdf", format="pdf", bbox_inches="tight")
+    plt.savefig(fig_dir/"example6_r_bar.pdf", format="pdf", bbox_inches="tight")
 
     # (d) control (paper regularization, explicit mode)
     '''

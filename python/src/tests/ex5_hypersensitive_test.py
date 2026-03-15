@@ -17,7 +17,6 @@ from core.adaptivity import solve_optimal_control
 from core.integrators import pack_unknowns
 from core.shooting import shooting_residual, shooting_jacobian
 
-
 def run_example():
     # ============================================================
     # 0) Problem definition (matches PDF Example 7)
@@ -96,7 +95,7 @@ def run_example():
 
     use_oracle_bootstrap = False   # o True
     use_oracle_PA = True
-    use_explicit_hamiltonian_gradients = False
+    use_explicit_hamiltonian_gradients = True
     # ============================================================
     # 1) Solve with the repo's adaptive outer loop
     # ============================================================
@@ -187,7 +186,7 @@ def run_example():
     plt.ylabel("Δt")
     plt.title("Time mesh: Δt(t) (step plot)")
     plt.grid(True, which="both")
-    plt.savefig(fig_dir /"example5_tvsdt.pdf", format="pdf", bbox_inches="tight")
+    plt.savefig(fig_dir /"example5_test_tvsdt.pdf", format="pdf", bbox_inches="tight")
     #plt.show()
 
     X = np.asarray(result["X"])[:, 0]
@@ -203,7 +202,7 @@ def run_example():
     plt.title("Example 5: State X(t)")
     plt.legend()
     plt.grid(True)
-    plt.savefig(fig_dir /"example5_state_X.pdf", format="pdf", bbox_inches="tight")
+    plt.savefig(fig_dir /"example5_test_state_X.pdf", format="pdf", bbox_inches="tight")
 
 
     fig2 = plt.figure()
@@ -213,7 +212,7 @@ def run_example():
     plt.title("Example 5: Costate P(t)")
     plt.legend()
     plt.grid(True)
-    plt.savefig(fig_dir /"example5_costate_P.pdf", format="pdf", bbox_inches="tight")
+    plt.savefig(fig_dir /"example5_test_costate_P.pdf", format="pdf", bbox_inches="tight")
 
     # --- arrays ---
     rho_bar = np.asarray(result["rhobar"])   # length N
@@ -229,7 +228,7 @@ def run_example():
     plt.title(r"Example 5: density-like term $\bar{\rho}_n$")   # <-- TEXTO PRIMERO
     plt.grid(True)
     plt.legend()
-    plt.savefig(fig_dir /"example5_rho_bar.pdf", format="pdf", bbox_inches="tight")
+    plt.savefig(fig_dir /"example5_test_rho_bar.pdf", format="pdf", bbox_inches="tight")
 
 
     # Plot r_bar
@@ -241,7 +240,7 @@ def run_example():
     plt.title(r"Example 5: time error indicator $\bar{r}_n = |\bar{\rho}_n|\,\Delta t_n^2$")  # <-- TEXTO PRIMERO
     plt.grid(True, which="both")
     plt.legend()
-    plt.savefig(fig_dir /"example5_r_bar.pdf", format="pdf", bbox_inches="tight")
+    plt.savefig(fig_dir /"example5_test_r_bar.pdf", format="pdf", bbox_inches="tight")
    
 
     # Show all figures at once
