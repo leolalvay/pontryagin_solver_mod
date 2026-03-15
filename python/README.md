@@ -85,10 +85,13 @@ tolerances, use flags setting explicit hamitonian and its gradients and prints a
 
 ## Notes
 
-- This implementation follows the design laid out in the DeepResearch
-  blueprint.  In particular, the solver uses a symplectic Euler
-  discretisation of the canonical system, a damped Newton method to solve
-  the resulting TPBVP, and a posteriori indicators to guide adaptivity.
-- While the code aims to be robust, it is intended primarily as an
-  educational reference and may require tuning of tolerances and initial
-  guesses for challenging problems.
+- This implementation follows a version control divided by branches as follows
+```
+main
+  pa-init-hyper-search
+  pa-init-hyper-test
+  pa-init-hypersensitive
+  paper-time-adapt  
+```
+- The `main` branch is defined as the deliverable implementation (branch to monitor for updates) and the secondary branches contain modifications of the main branch that could or could not be integrated later in the main branch.
+
