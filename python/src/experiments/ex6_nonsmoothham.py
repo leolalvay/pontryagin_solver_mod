@@ -225,7 +225,7 @@ def run_example():
     # 5) Plots (same style as ex5)
     # ============================================================
     # (a) time mesh dt(t)
-    fig_dir = Path("figures")
+    fig_dir = fig_dir = Path(__file__).resolve().parent / "figures"
     fig_dt = plt.figure()
     plt.step(t[:-1], dt, where="post")
     plt.yscale("log")
