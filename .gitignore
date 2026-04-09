@@ -13,3 +13,6 @@ results/
 # Python artifacts
 __pycache__/
 *.pyc
+
+# Virtual Enviroment
+.venv/
