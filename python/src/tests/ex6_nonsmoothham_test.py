@@ -459,7 +459,7 @@ def plot_ex6_results(result, ref, out_prefix="ex6_test"):
         print("[plot] No iteration log available; skipping plots.")
         return
     
-    fig_dir = Path("figures")
+    fig_dir = fig_dir = Path(__file__).resolve().parent / "figures"
 
     t = np.asarray(result["t"], dtype=float)
     x = np.asarray(result["x"], dtype=float)
