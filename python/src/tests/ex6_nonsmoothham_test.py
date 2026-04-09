@@ -2,6 +2,7 @@ import numpy as np
 from scipy.optimize import root
 import matplotlib.pyplot as plt
 from pathlib import Path
+from functools import partial
 
 def init_ex6():
     T = 1.0
@@ -453,13 +454,46 @@ def run_adaptivity_test(params, model, ref=None, verbose=True, maxit=None):
 
     return result
 
+def save_plot(fig, stem, fig_dir, ext="pdf"):
+    """
+    Save one figure to disk and close it.
 
-def plot_ex6_results(result, ref, out_prefix="ex6_test"):
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        Figure object to save.
+    stem : str
+        Base filename without extension.
+    fig_dir : pathlib.Path
+        Directory where figures are stored.
+    ext : str, default="pdf"
+        File extension / output format.
+    """
+    fig.savefig(fig_dir / f"{stem}.{ext}", bbox_inches="tight")
+    plt.close(fig)
+
+def keep_plot(fig, stem=None):
+    """
+    Do nothing to the figure.
+
+    This is used in interactive mode:
+    figures remain open, and at the end we call plt.show()
+    once to display all of them together.
+    """
+    pass
+
+def plot_ex6_results(result, ref, out_prefix="ex6_test", save_plots=False, plot_ext="pdf", fig_dir=None):
     if ("log" not in result) or (len(result["log"]) == 0):
         print("[plot] No iteration log available; skipping plots.")
         return
     
-    fig_dir = fig_dir = Path(__file__).resolve().parent / "figures"
+    if fig_dir is None:
+        fig_dir = Path(__file__).resolve().parent / "figures"
+    else:
+        fig_dir = Path(fig_dir)
+
+    plot_action = partial(save_plot, fig_dir=fig_dir, ext=plot_ext) if save_plots else keep_plot
+    render_plots = (lambda: None) if save_plots else plt.show
 
     t = np.asarray(result["t"], dtype=float)
     x = np.asarray(result["x"], dtype=float)
@@ -487,8 +521,7 @@ def plot_ex6_results(result, ref, out_prefix="ex6_test"):
     plt.grid(True, which="both")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(fig_dir / f"{out_prefix}_t_vs_dt.pdf", bbox_inches="tight")
-    plt.close(fig)
+    plot_action(fig, f"{out_prefix}_t_vs_dt")
 
     fig = plt.figure(figsize=(6, 4))
     plt.plot(t, x, label="x (computed)", linewidth=2.0)
@@ -499,8 +532,7 @@ def plot_ex6_results(result, ref, out_prefix="ex6_test"):
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(fig_dir / f"{out_prefix}_state_x.pdf", bbox_inches="tight")
-    plt.close(fig)
+    plot_action(fig, f"{out_prefix}_state_x")
 
     fig = plt.figure(figsize=(6, 4))
     plt.plot(t, p, label="p (computed)", linewidth=2.0)
@@ -511,8 +543,7 @@ def plot_ex6_results(result, ref, out_prefix="ex6_test"):
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(fig_dir / f"{out_prefix}_costate_p.pdf", bbox_inches="tight")
-    plt.close(fig)
+    plot_action(fig, f"{out_prefix}_costate_p")
 
     fig = plt.figure(figsize=(6, 4))
     plt.step(t_int, a, where="post", label="a (computed)", linewidth=2.0)
@@ -523,8 +554,7 @@ def plot_ex6_results(result, ref, out_prefix="ex6_test"):
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(fig_dir / f"{out_prefix}_control_a.pdf", bbox_inches="tight")
-    plt.close(fig)
+    plot_action(fig, f"{out_prefix}_control_a")
 
     fig = plt.figure(figsize=(6, 4))
     plt.step(t_int, rho, where="post", label=r"$\rho_n$")
@@ -535,8 +565,7 @@ def plot_ex6_results(result, ref, out_prefix="ex6_test"):
     plt.grid(True)
     plt.legend()
     plt.tight_layout()
-    plt.savefig(fig_dir / f"{out_prefix}_rho_density.pdf", bbox_inches="tight")
-    plt.close(fig)
+    plot_action(fig, f"{out_prefix}_rho_density")
 
     fig = plt.figure(figsize=(6, 4))
     plt.step(t_int, r_bar, where="post", label=r"$\bar r_n = |\bar\rho_n|\Delta t_n^2$")
@@ -547,9 +576,9 @@ def plot_ex6_results(result, ref, out_prefix="ex6_test"):
     plt.grid(True, which="both")
     plt.legend()
     plt.tight_layout()
-    plt.savefig(fig_dir / f"{out_prefix}_r_indicator.pdf", bbox_inches="tight")
-    plt.close(fig)
+    plot_action(fig, f"{out_prefix}_r_indicator")
 
+    render_plots()
 
 if __name__ == "__main__":
     params, model, ref = init_ex6()

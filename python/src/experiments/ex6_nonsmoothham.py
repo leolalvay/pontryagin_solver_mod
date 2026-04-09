@@ -20,7 +20,9 @@ from core.problem import OCPProblem
 from core.adaptivity import solve_optimal_control
 from core.smoothing import eval_H_smooth
 
+# Functions used in the ploting section
 from pathlib import Path
+from functools import partial
 
 def run_example():
     # ============================================================
@@ -224,8 +226,25 @@ def run_example():
     # ============================================================
     # 5) Plots (same style as ex5)
     # ============================================================
-    # (a) time mesh dt(t)
+    #SAVE_PLOTS controls the plotting mode:
+    #True  -> figures are written to disk and then closed
+    #False -> figures are kept open and displayed on screen at the end
+    SAVE_PLOTS = False
+    PLOT_EXT = "pdf" #Format for saving figures
+    # fig_dir defines the path for saving figures
     fig_dir = fig_dir = Path(__file__).resolve().parent / "figures"
+
+    def save_plot(fig, stem, fig_dir, ext="pdf"):
+        fig.savefig(fig_dir / f"{stem}.{ext}", bbox_inches="tight")
+        plt.close(fig)
+
+    def keep_plot(fig, stem=None):
+        pass
+    #suppose f(x,y,z). Fix y=1, z=2 then g=partial(f,y=1,z=2) depends only on x    
+    plot_action = partial(save_plot, fig_dir=fig_dir, ext=PLOT_EXT) if SAVE_PLOTS else keep_plot
+    render_plots = (lambda: None) if SAVE_PLOTS else plt.show
+    # (a) time mesh dt(t)
+    
     fig_dt = plt.figure()
     plt.step(t[:-1], dt, where="post")
     plt.yscale("log")
@@ -233,7 +252,7 @@ def run_example():
     plt.ylabel("Δt")
     plt.title("Example 6: Time mesh Δt(t)")
     plt.grid(True, which="both")
-    plt.savefig(fig_dir/"example6_tvsdt.pdf", format="pdf", bbox_inches="tight")
+    plot_action(fig_dt, "example6_tvsdt")
 
     # (b) state
     fig_x = plt.figure()
@@ -244,7 +263,7 @@ def run_example():
     plt.title("Example 6: State X(t)")
     plt.legend()
     plt.grid(True)
-    plt.savefig(fig_dir/"example6_state_X.pdf", format="pdf", bbox_inches="tight")
+    plot_action(fig_x, "example6_state_X")
 
     # (c) costate
     fig_p = plt.figure()
@@ -255,7 +274,7 @@ def run_example():
     plt.title("Example 6: Costate P(t)")
     plt.legend()
     plt.grid(True)
-    plt.savefig(fig_dir/"example6_costate_P.pdf", format="pdf", bbox_inches="tight")
+    plot_action(fig_p, "example6_costate_P")
 
     # (d) control (active plane)
     fig_u = plt.figure()
@@ -269,7 +288,7 @@ def run_example():
     plt.title("Example 6: Control comparison")
     plt.legend()
     plt.grid(True)
-    plt.savefig(fig_dir/"example6_control_compare.pdf", format="pdf", bbox_inches="tight")
+    plot_action(fig_u, "example6_control_compare")
     plt.close(fig_u)
     # (e) rho_bar and r_bar (from adaptivity)
     #rho_bar = np.asarray(result["rhobar"])  # length N
@@ -283,7 +302,7 @@ def run_example():
     plt.title(r"Example 6: density-like term $\bar{\rho}_n$")
     plt.grid(True, which="both")
     plt.legend()
-    plt.savefig(fig_dir/"example6_rho_bar.pdf", format="pdf", bbox_inches="tight")
+    plot_action(fig_rho, "example6_rho_bar")
 
     fig_r = plt.figure()
     plt.step(t[:-1], r_bar, where="post", label=r"$\bar{r}_n$")
@@ -293,7 +312,9 @@ def run_example():
     plt.title(r"Example 6: time error indicator $\bar{r}_n = |\bar{\rho}_n|\,\Delta t_n^2$")
     plt.grid(True, which="both")
     plt.legend()
-    plt.savefig(fig_dir/"example6_r_bar.pdf", format="pdf", bbox_inches="tight")
+    plot_action(fig_r, "example6_r_bar")
+
+    render_plots()
 
     # (d) control (paper regularization, explicit mode)
     '''
