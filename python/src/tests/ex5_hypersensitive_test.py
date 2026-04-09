@@ -176,7 +176,7 @@ def run_example():
     t = np.asarray(result["t_nodes"])
     dt = np.diff(t)
 
-    fig_dir = Path("figures")
+    fig_dir = fig_dir = Path(__file__).resolve().parent / "figures"
 
     fig1 = plt.figure()
     #plt.figure()
