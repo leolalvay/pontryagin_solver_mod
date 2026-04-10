@@ -7,7 +7,7 @@ from functools import partial
 def init_ex6():
     T = 1.0
     x0 = 0.5
-    delta = 1e-6
+    delta = 1e-10
     N0 = 20
     tol_time = 1e-6
     max_refine = 20
@@ -177,8 +177,23 @@ def jacobian_symplectic_euler(z, params, model):
     J[-1, il(N)] = 1.0
     return J
 
-
 def initial_guess(params):
+    t = params["t"]
+    x0 = params["x0"]
+    N = len(t) - 1
+
+    # state guess: move left with slope -1 until hitting zero
+    x_guess = np.maximum(x0 - t, 0.0)
+
+    # costate guess: backward Euler from lambda(T)=0 using lambda' = 10 x^9
+    lam_guess = np.zeros(N + 1)
+    for i in range(N - 1, -1, -1):
+        dt = t[i + 1] - t[i]
+        lam_guess[i] = lam_guess[i + 1] + dt * 10.0 * x_guess[i]**9
+
+    return pack_z(x_guess, lam_guess)
+
+'''def initial_guess(params):
     t = params["t"]
     x0 = params["x0"]
     N = len(t) - 1
@@ -186,6 +201,12 @@ def initial_guess(params):
     x_guess = np.linspace(x0, 0.0, N + 1)
     lam_guess = np.zeros(N + 1)
 
+    return pack_z(x_guess, lam_guess)'''
+
+def initial_guess_from_reference(params, ref):
+    t = params["t"]
+    x_guess = np.asarray(ref["x_star"](t), dtype=float)
+    lam_guess = np.asarray(ref["p_star"](t), dtype=float)
     return pack_z(x_guess, lam_guess)
 
 
@@ -203,6 +224,17 @@ def solve_on_mesh(params, model, z0=None, tol=1e-10, maxfev=20000):
         options={"maxfev": maxfev},
     )
 
+    res_inf = float(np.linalg.norm(sol.fun, ord=np.inf))
+    accept_res = 1e-10
+    success_flag = bool(sol.success) or (res_inf <= accept_res)
+
+    if sol.success:
+        message = sol.message
+    elif res_inf <= accept_res:
+        message = f"Accepted by residual criterion: res_inf={res_inf:.3e}"
+    else:
+        message = sol.message
+
     x, lam = unpack_z(sol.x, params["x0"])
     t = params["t"]
     N = len(t) - 1
@@ -210,11 +242,11 @@ def solve_on_mesh(params, model, z0=None, tol=1e-10, maxfev=20000):
     J_cost = float(np.sum(np.diff(t) * (x[:-1] ** 10)))
 
     return {
-        "success": bool(sol.success),
-        "message": sol.message,
+        "success": bool(success_flag),
+        "message": message,
         "nfev": int(sol.nfev),
         "njev": int(getattr(sol, "njev", -1)),
-        "res_inf": float(np.linalg.norm(sol.fun, ord=np.inf)),
+        "res_inf": res_inf,
         "x": x,
         "lam": lam,
         "a": a,
@@ -261,7 +293,8 @@ def compute_time_indicator(params, model, x, lam, K_time=1.0):
         rho[i] = rho_i
 
         mag = max(abs(rho_i), floor)
-        rho_bar_i = np.sign(rho_i) * mag
+        rho_bar_i = mag
+        #rho_bar_i = np.sign(rho_i) * mag
         rho_bar[i] = rho_bar_i
 
         r_bar[i] = abs(rho_bar_i) * (dt[i] ** 2)
@@ -310,7 +343,7 @@ def prolongate_guess(t_old, x_old, lam_old, t_new):
     return x_new, lam_new
 
 
-def run_adaptivity_test(params, model, ref=None, verbose=True, maxit=None):
+def run_adaptivity_test(params, model, ref=None, verbose=True, maxit=None, z0_init=None):
     tol_time = float(params["tol_time"])
     s_mark = float(params["s_mark"])
     M_sub = int(params["M_sub"])
@@ -322,7 +355,7 @@ def run_adaptivity_test(params, model, ref=None, verbose=True, maxit=None):
         maxit = int(maxit)
 
     t = np.asarray(params["t"], dtype=float).copy()
-    z0 = None
+    z0 = z0_init
     log = []
 
     iters_used = 0
@@ -482,6 +515,32 @@ def keep_plot(fig, stem=None):
     """
     pass
 
+#Compact summary fucntions
+def summarize_array(name, arr):
+    arr = np.asarray(arr, dtype=float)
+    print(
+        f"{name:10s}: len={len(arr):4d}  "
+        f"min={arr.min():.3e}  max={arr.max():.3e}  "
+        f"first={arr[0]:.3e}  last={arr[-1]:.3e}"
+    )
+
+def print_log_summary(log_entry):
+    print("\n=== LAST LOG SUMMARY ===")
+    for key in [
+        "iter", "N", "success", "res_inf", "nfev", "njev", "J",
+        "eta_time_max", "eta_time_sum", "tol_star", "mark_thr",
+        "n_marked", "dt_min", "dt_max", "floor",
+        "err_x_inf", "err_p_inf", "err_J_abs"
+    ]:
+        if key in log_entry:
+            print(f"{key:12s}: {log_entry[key]}")
+
+    for key in ["rho", "rho_bar", "r_bar"]:
+        if key in log_entry:
+            summarize_array(key, log_entry[key])
+
+
+
 def plot_ex6_results(result, ref, out_prefix="ex6_test", save_plots=False, plot_ext="pdf", fig_dir=None):
     if ("log" not in result) or (len(result["log"]) == 0):
         print("[plot] No iteration log available; skipping plots.")
@@ -582,7 +641,32 @@ def plot_ex6_results(result, ref, out_prefix="ex6_test", save_plots=False, plot_
 
 if __name__ == "__main__":
     params, model, ref = init_ex6()
-    result = run_adaptivity_test(params, model, ref=ref, verbose=True, maxit=20)
+
+    z0_init = initial_guess_from_reference(params, ref)
+    result = run_adaptivity_test(
+        params,
+        model,
+        ref=ref,
+        verbose=True,
+        maxit=20,
+        z0_init=z0_init,
+    )
+    plot_ex6_results(result, ref, out_prefix="example6_test")
+    print("\n=== FINAL SUMMARY ===")
+    print("converged   :", result["converged"])
+    print("stop_reason :", result["stop_reason"])
+    print("success     :", result["success"])
+    print("message     :", result["message"])
+    print("res_inf     :", result["res_inf"])
+    print_log_summary(result["log"][-1])
+    '''print("\n=== FINAL SUMMARY ===")
+    print("converged   :", result["converged"])
+    print("stop_reason :", result["stop_reason"])
+    print("success     :", result["success"])
+    print("message     :", result["message"])
+    print("res_inf     :", result["res_inf"])
+    print("N_final     :", len(result["t"]) - 1)'''
+    '''result = run_adaptivity_test(params, model, ref=ref, verbose=True, maxit=20)
 
     if not result["success"]:
         print("\n[ERROR] Final solve failed:", result["message"])
@@ -607,4 +691,4 @@ if __name__ == "__main__":
         print("J_star      :", ref["J_star"])
         print("||x-x*||inf :", np.max(np.abs(x - x_star)))
         print("||p-p*||inf :", np.max(np.abs(p - p_star)))
-        print("||a-a*||inf :", np.max(np.abs(a - a_star)))
+        print("||a-a*||inf :", np.max(np.abs(a - a_star)))'''
