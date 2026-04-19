@@ -39,7 +39,7 @@ def run_example():
     def terminal_cost(x):
         return float(x.dot(Qf.dot(x)))
     # control bounds (approximate unconstrained by large bounds)
-    u_min = np.array([-5.0])
+    u_min = np.array([-11.0])
     u_max = np.array([5.0]) 
     # create problem
     prob = OCPProblem(dynamics, stage_cost, terminal_cost, x0, T,
@@ -47,7 +47,7 @@ def run_example():
     # initial mesh: uniform with 20 segments
     t_nodes = np.linspace(0.0, T, 21)
     # solve adaptively
-    result = solve_optimal_control(prob, t_nodes, tol_time=1e-3, tol_PA=1e-3, tol_delta=1e-3, max_iters=10, delta0=0.1)
+    result = solve_optimal_control(prob, t_nodes, tol_time=1e-2, tol_PA=1e-2, tol_delta=1e-2, max_iters=10, delta0=0.1)
     # extract solution
     print("len(log) =", len(result["log"]))
     print("last outer iter =", result["log"][-1]["iteration"])
