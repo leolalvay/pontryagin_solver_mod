@@ -123,7 +123,7 @@ def assemble_residual(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
         g_plus = problem.g(x_plus)
         g_minus = problem.g(x_minus)
         g_grad[j] = (g_plus - g_minus) / (2 * eps)
-    r_bc = p_N + g_grad
+    r_bc = p_N - g_grad
     residual[offset:] = r_bc
     return residual
 
@@ -209,7 +209,7 @@ def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
     def bc_block() -> np.ndarray:
         """
         Boundary residual block:
-            r_bc = p_N + grad g(x_N)
+            r_bc = p_N - grad g(x_N)
         grad g computed by central differences (same style as assemble_residual).
         """
         xN = X[-1]
@@ -224,7 +224,7 @@ def assemble_jacobian(problem, t_nodes: np.ndarray, X: np.ndarray, P: np.ndarray
             g_plus = problem.g(x_plus)
             g_minus = problem.g(x_minus)
             g_grad[j] = (g_plus - g_minus) / (2 * epsg)
-        return pN + g_grad
+        return pN - g_grad
 
     # ============================================================
     # Build sparse matrix via triplets (COO), then convert to CSR.
