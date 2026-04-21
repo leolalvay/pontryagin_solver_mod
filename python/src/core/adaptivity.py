@@ -408,7 +408,7 @@ def solve_optimal_control(
         for i in range(N):
             _, Hp, Hx = _grads_for_indicators(problem, bundle, P[i + 1], X[i], t_nodes[i], delta, use_explicit_hamiltonian_gradients=use_explicit_hamiltonian_gradients)
             rho_arr[i] = -0.5 * float(np.dot(Hp, Hx))
-            rho_bar_arr[i] = np.sign(rho_arr[i]) * max(abs(rho_arr[i]), floor)
+            rho_bar_arr[i] = max(abs(rho_arr[i]), floor)
             eta_time_local[i] = abs(rho_bar_arr[i]) * (dt[i] ** 2)
 
         eta_time = float(np.max(eta_time_local)) if N > 0 else 0.0
