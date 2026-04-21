@@ -1,6 +1,8 @@
 import numpy as np
 from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
+from pathlib import Path
+from functools import partial
 
 def build_lqr_example_1():
     """
@@ -500,14 +502,44 @@ def run_lqr_riccati_benchmark(
         "pmp_diagnostics": pmp_info,
     }
 
-def plot_lqr_trajectories(result):
+def save_plot(fig, stem, fig_dir, ext="pdf"):
     """
-    Plot the state, control, and costate trajectories of the LQR benchmark.
+    Save one figure to disk and close it.
+    """
+    fig_dir = Path(fig_dir)
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    fig.savefig(fig_dir / f"{stem}.{ext}", bbox_inches="tight")
+    plt.close(fig)
+
+
+def keep_plot(fig, stem=None):
+    """
+    Keep figure open in interactive mode (no save).
+    """
+    pass
+
+def plot_lqr_trajectories(
+    result,
+    out_prefix="ex1_test",
+    save_plots=False,
+    plot_ext="pdf",
+    fig_dir=None,
+):
+    """
+    Plot (or save) the state, control, and costate trajectories of the LQR benchmark.
 
     Parameters
     ----------
     result : dict
         Output of run_lqr_riccati_benchmark().
+    out_prefix : str, optional
+        Prefix used for saved figure filenames.
+    save_plots : bool, optional
+        If True, save figures to disk. If False, display with plt.show().
+    plot_ext : str, optional
+        File extension for saved figures (e.g., "pdf", "png").
+    fig_dir : str or pathlib.Path, optional
+        Output directory for saved figures. Defaults to "<this file>/figures".
     """
     state_result = result["state_result"]
 
@@ -516,7 +548,15 @@ def plot_lqr_trajectories(result):
     u_grid = state_result["u_grid"]
     p_grid = state_result["p_grid"]
 
-    plt.figure(figsize=(8, 5))
+    if fig_dir is None:
+        fig_dir = Path(__file__).resolve().parent / "figures"
+    else:
+        fig_dir = Path(fig_dir)
+
+    plot_action = partial(save_plot, fig_dir=fig_dir, ext=plot_ext) if save_plots else keep_plot
+    render_plots = (lambda: None) if save_plots else plt.show
+
+    fig = plt.figure(figsize=(8, 5))
     plt.plot(t_grid, x_grid[:, 0], label="x1(t)")
     plt.plot(t_grid, x_grid[:, 1], label="x2(t)")
     plt.xlabel("t")
@@ -525,8 +565,9 @@ def plot_lqr_trajectories(result):
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
+    plot_action(fig, f"{out_prefix}_state_x")
 
-    plt.figure(figsize=(8, 5))
+    fig = plt.figure(figsize=(8, 5))
     plt.plot(t_grid, u_grid[:, 0], label="u(t)")
     plt.xlabel("t")
     plt.ylabel("control")
@@ -534,8 +575,9 @@ def plot_lqr_trajectories(result):
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
+    plot_action(fig, f"{out_prefix}_control_u")
 
-    plt.figure(figsize=(8, 5))
+    fig = plt.figure(figsize=(8, 5))
     plt.plot(t_grid, p_grid[:, 0], label="p1(t)")
     plt.plot(t_grid, p_grid[:, 1], label="p2(t)")
     plt.xlabel("t")
@@ -544,13 +586,19 @@ def plot_lqr_trajectories(result):
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
+    plot_action(fig, f"{out_prefix}_costate_p")
 
-    plt.show()
+    render_plots()
 
 def main():
     """
     Entry point for the standalone Riccati benchmark script.
     """
+    # Toggle this flag:
+    # - False: interactive display via plt.show()
+    # - True : save figures to disk (PDF by default)
+    save_plots = True
+
     result = run_lqr_riccati_benchmark()
 
     print("=== LQR Riccati Benchmark: Example 1 ===")
@@ -570,7 +618,12 @@ def main():
     print(f"  Max stationarity error = {result['pmp_diagnostics']['max_stationarity_error']:.12e}")
     print(f"  Time of max stationarity error = {result['pmp_diagnostics']['time_of_max_stationarity_error']:.12e}")
 
-    plot_lqr_trajectories(result)
+    plot_lqr_trajectories(
+        result,
+        out_prefix="example1_test",
+        save_plots=save_plots,
+        plot_ext="pdf",
+    )
     return result
 
 
