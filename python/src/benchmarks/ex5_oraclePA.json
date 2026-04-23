@@ -1,13 +1,13 @@
 {
   "example": "ex5_hypersensitive",
-  "wall_time_sec": 204.49352471101156,
+  "wall_time_sec": 195.6065654099948,
   "max_iters": 24,
   "N_final": 3522,
   "M_final": 18,
   "delta_final": 0.02,
-  "eta_time": 2.3670316521393653e-06,
-  "eta_PA": 0.02284570775885595,
-  "eta_delta": 0.3648098725016602,
+  "eta_time": 2.367031654642074e-06,
+  "eta_PA": 0.02284555978596162,
+  "eta_delta": 0.36481003757170744,
   "len_t_nodes": 3523,
   "use_oracle_bootstrap": false,
   "use_oracle_PA": true
